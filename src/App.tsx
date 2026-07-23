@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from "react";
 
 type Phase = "welcome" | "camera" | "select" | "preview";
 type ShotMode = "six" | "four";
+// 전면 카메라(렌즈)가 있는 화면 가장자리 — 카운트다운·응시 유도를 그쪽에 배치해
+// 숫자를 읽는 시선이 자연스럽게 렌즈를 향하게 합니다. 기기마다 위치가 달라 설정으로 둡니다.
+type CamEdge = "top" | "left" | "right";
+const CAM_EDGE_KEY = "fourcut-cam-edge";
 type ThemeKey = "sunny" | "berry" | "midnight" | "mint" | "lavender" | "ocean";
 
 type Theme = {
@@ -702,6 +706,10 @@ export default function App() {
   const [themeKey, setThemeKey] = useState<ThemeKey>("sunny");
   const [filterKey, setFilterKey] = useState<FilterKey>("none");
   const [shotMode, setShotMode] = useState<ShotMode>("six");
+  const [camEdge, setCamEdge] = useState<CamEdge>(() => {
+    const saved = localStorage.getItem(CAM_EDGE_KEY);
+    return saved === "left" || saved === "right" ? saved : "top";
+  });
   const [picked, setPicked] = useState<number[]>([]);
   const [composing, setComposing] = useState(false);
   const [eventName, setEventName] = useState("너와 나 그리고 우리");
@@ -723,6 +731,15 @@ export default function App() {
   const streamRef = useRef<MediaStream | null>(null);
   // 촬영 시퀀스의 세대 번호. reset 등으로 증가하면 진행 중이던 시퀀스가 스스로 중단됩니다.
   const runGenRef = useRef(0);
+
+  const pickCamEdge = (edge: CamEdge) => {
+    setCamEdge(edge);
+    try {
+      localStorage.setItem(CAM_EDGE_KEY, edge);
+    } catch {
+      // 프라이빗 모드 등 저장 불가 시 세션 동안만 유지
+    }
+  };
 
   const theme = THEMES[themeKey];
   const totalShots = shotMode === "six" ? 6 : 4;
@@ -1198,6 +1215,28 @@ export default function App() {
               </div>
             </fieldset>
 
+            <fieldset className="edge-picker">
+              <legend>카메라 위치</legend>
+              <div className="edge-options" role="group" aria-label="전면 카메라가 있는 가장자리">
+                {([
+                  ["top", "위쪽"],
+                  ["left", "왼쪽"],
+                  ["right", "오른쪽"],
+                ] as [CamEdge, string][]).map(([edge, label]) => (
+                  <button
+                    type="button"
+                    className={`edge-option ${camEdge === edge ? "selected" : ""}`}
+                    onClick={() => pickCamEdge(edge)}
+                    aria-pressed={camEdge === edge}
+                    key={edge}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <small className="edge-hint">렌즈가 있는 쪽을 골라주세요 — 촬영 중 "여기를 봐요!" 안내가 그쪽에 떠요</small>
+            </fieldset>
+
             <label className="privacy-check">
               <input type="checkbox" checked={privacyChecked} onChange={(event) => setPrivacyChecked(event.target.checked)} />
               <span><strong>촬영 안내를 확인했어요.</strong><small>사진은 서버로 전송되지 않고 이 iPad에서만 만들어져요.</small></span>
@@ -1214,7 +1253,7 @@ export default function App() {
 
       {phase === "camera" && (
         <main className="camera-layout no-print">
-          <section className="camera-stage">
+          <section className={`camera-stage edge-${camEdge}`}>
             <div className="camera-frame">
               <video
                 ref={videoRef}
@@ -1245,10 +1284,18 @@ export default function App() {
                 <div className={`countdown ${countdown === 1 ? "last" : ""}`} key={countdown}>{countdown}</div>
               )}
             </div>
-            <div className="camera-caption">
-              이 사각형 안이 그대로 인쇄돼요 · 자연스럽게 웃어주세요!
-              {camRes && <span className="cam-res"> · {camRes}</span>}
-            </div>
+            {!shooting && (
+              <div className="camera-caption">
+                이 사각형 안이 그대로 인쇄돼요 · 자연스럽게 웃어주세요!
+                {camRes && <span className="cam-res"> · {camRes}</span>}
+              </div>
+            )}
+            {shooting && (
+              <div className="gaze-hint" aria-hidden="true">
+                <span className="gaze-dot" />
+                📷 여기를 봐요!
+              </div>
+            )}
             <div className="camera-filters" role="group" aria-label="사진 필터 선택">
               {FILTERS.map((option) => (
                 <button
