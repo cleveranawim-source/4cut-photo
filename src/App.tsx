@@ -456,8 +456,9 @@ function makeSampleFrames(filterCss: string = "none", bloom: number = 0) {
   });
 }
 
-function Icon({ name }: { name: "camera" | "qr" | "print" | "download" | "redo" | "sparkle" }) {
+function Icon({ name }: { name: "camera" | "qr" | "print" | "download" | "redo" | "sparkle" | "video" }) {
   const paths = {
+    video: <><rect x="3" y="6" width="13" height="12" rx="2"/><path d="m16 10.5 5-3v9l-5-3z"/></>,
     camera: <><path d="M5 8h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2Z"/><path d="m8 8 1.5-3h5L16 8"/><circle cx="12" cy="14" r="3.5"/></>,
     qr: <><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM18 18h3v3h-3zM14 20h2M20 14h1v2"/></>,
     print: <><path d="M7 8V3h10v5M7 17H5a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M7 14h10v7H7z"/></>,
@@ -482,6 +483,7 @@ export default function App() {
   const [flash, setFlash] = useState(false);
   const [status, setStatus] = useState("준비되면 촬영 버튼을 눌러주세요");
   const [composite, setComposite] = useState<string | null>(null);
+  const [clip, setClip] = useState<{ url: string; blob: Blob; ext: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const glowVideoRef = useRef<HTMLVideoElement>(null);
@@ -512,6 +514,9 @@ export default function App() {
   };
 
   useEffect(() => () => stopCamera(), []);
+
+  // 영상 blob URL 누수 방지: clip 이 바뀌거나 언마운트될 때 이전 URL 해제
+  useEffect(() => () => { if (clip) URL.revokeObjectURL(clip.url); }, [clip]);
 
   useEffect(() => {
     if (phase === "camera" && streamRef.current) {
@@ -559,12 +564,108 @@ export default function App() {
     }
   };
 
+  // 촬영 시작~마지막 컷까지의 라이브 화면을 720p(좌우 반전)로 캔버스에 그려 녹화합니다.
+  const startClipRecording = () => {
+    const stream = streamRef.current;
+    if (!stream || typeof MediaRecorder === "undefined") return null;
+    try {
+      const recCanvas = document.createElement("canvas");
+      recCanvas.width = 1280;
+      recCanvas.height = 720;
+      const recContext = recCanvas.getContext("2d", { alpha: false });
+      let active = true;
+      const draw = () => {
+        if (!active) return;
+        const source = videoRef.current;
+        if (recContext && source && source.videoWidth) {
+          recContext.save();
+          recContext.translate(1280, 0);
+          recContext.scale(-1, 1);
+          drawCover(recContext, source, source.videoWidth, source.videoHeight, 0, 0, 1280, 720);
+          recContext.restore();
+        }
+        requestAnimationFrame(draw);
+      };
+      requestAnimationFrame(draw);
+
+      const recStream = recCanvas.captureStream(30);
+      const candidates = [
+        "video/mp4;codecs=avc1",
+        "video/mp4",
+        "video/webm;codecs=vp9",
+        "video/webm;codecs=vp8",
+        "video/webm",
+      ];
+      const isSupported = (type: string) =>
+        typeof MediaRecorder.isTypeSupported === "function" && MediaRecorder.isTypeSupported(type);
+      const mime = candidates.find(isSupported) || "";
+      const recorder = mime
+        ? new MediaRecorder(recStream, { mimeType: mime, videoBitsPerSecond: 4_000_000 })
+        : new MediaRecorder(recStream);
+      const chunks: BlobPart[] = [];
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size) chunks.push(event.data);
+      };
+      // 타임슬라이스로 주기적 저장 — 마지막 flush 실패에 덜 취약합니다.
+      recorder.start(1000);
+
+      const stop = () =>
+        new Promise<{ url: string; blob: Blob; ext: string } | null>((resolve) => {
+          if (recorder.state === "inactive") {
+            active = false;
+            resolve(null);
+            return;
+          }
+          recorder.onstop = () => {
+            active = false;
+            const type = mime || "video/webm";
+            const blob = new Blob(chunks, { type });
+            resolve(
+              blob.size
+                ? { url: URL.createObjectURL(blob), blob, ext: type.includes("mp4") ? "mp4" : "webm" }
+                : null,
+            );
+          };
+          try {
+            recorder.stop();
+          } catch {
+            active = false;
+            resolve(null);
+          }
+        });
+      return { stop };
+    } catch {
+      return null;
+    }
+  };
+
+  const saveClip = async () => {
+    if (!clip) return;
+    const file = new File([clip.blob], `네컷영상-${new Date().toISOString().slice(0, 10)}.${clip.ext}`, {
+      type: clip.blob.type,
+    });
+    try {
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: "우리들의 네컷 영상" });
+        return;
+      }
+    } catch {
+      return; // 사용자가 공유를 취소한 경우
+    }
+    const link = document.createElement("a");
+    link.href = clip.url;
+    link.download = file.name;
+    link.click();
+  };
+
   const runSequence = async () => {
     if (!videoRef.current || !cameraReady || shooting) return;
     setShooting(true);
     setError(null);
     setShots([]);
+    setClip(null);
     const frames: string[] = [];
+    const recording = startClipRecording();
     try {
       for (let index = 0; index < 4; index += 1) {
         setStatus(`${index + 1}번째 사진을 준비하세요`);
@@ -583,6 +684,11 @@ export default function App() {
         setFlash(false);
         if (index < 3) await sleep(650);
       }
+      // 마지막 컷까지 끝 → 녹화 종료 후 저장용으로 보관
+      if (recording) {
+        const captured = await recording.stop();
+        if (captured) setClip(captured);
+      }
       setStatus("네컷 사진을 꾸미고 있어요");
       const result = await composeFourCut(frames, theme, eventName);
       setComposite(result);
@@ -590,6 +696,7 @@ export default function App() {
       setCameraReady(false);
       setPhase("preview");
     } catch (caught) {
+      if (recording) await recording.stop().catch(() => null);
       setError(caught instanceof Error ? caught.message : "촬영 중 문제가 생겼습니다.");
     } finally {
       setCountdown(null);
@@ -636,6 +743,7 @@ export default function App() {
     setCameraReady(false);
     setPhase("welcome");
     setComposite(null);
+    setClip(null);
     setError(null);
   };
 
@@ -800,6 +908,11 @@ export default function App() {
               <button className="action-button" onClick={shareImage}>
                 <Icon name="download" /><span><strong>iPad에 저장·공유</strong><small>사진 앱 또는 AirDrop</small></span>
               </button>
+              {clip && (
+                <button className="action-button" onClick={saveClip}>
+                  <Icon name="video" /><span><strong>촬영 영상 저장</strong><small>촬영 과정 720p 영상</small></span>
+                </button>
+              )}
             </div>
             <button className="retake-button" onClick={retake}><Icon name="redo" /> 다시 찍기</button>
             <button className="text-button" onClick={reset}>새 손님 맞이하기</button>
