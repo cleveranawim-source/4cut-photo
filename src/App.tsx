@@ -70,6 +70,18 @@ const THEMES: Record<ThemeKey, Theme> = {
   },
 };
 
+type FilterKey = "none" | "vivid" | "warm" | "cool" | "mono" | "vintage";
+
+// CSS filter 문법은 캔버스 context.filter 와 동일해, 미리보기(비디오)와 결과물에 같은 값을 씁니다.
+const FILTERS: { key: FilterKey; name: string; css: string }[] = [
+  { key: "none", name: "원본", css: "none" },
+  { key: "vivid", name: "선명", css: "saturate(1.4) contrast(1.08)" },
+  { key: "warm", name: "따뜻", css: "sepia(0.25) saturate(1.28) brightness(1.05)" },
+  { key: "cool", name: "시원", css: "saturate(1.12) contrast(1.05) brightness(1.03) hue-rotate(-10deg)" },
+  { key: "mono", name: "흑백", css: "grayscale(1) contrast(1.06)" },
+  { key: "vintage", name: "빈티지", css: "sepia(0.55) contrast(1.05) brightness(1.02) saturate(1.1)" },
+];
+
 const sleep = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
 function drawCover(
@@ -121,7 +133,7 @@ function loadImage(source: string) {
 // 촬영 순간 화면을 인쇄 셀과 같은 가로세로비(PHOTO_RATIO)로 중앙 크롭합니다.
 const PHOTO_RATIO = 520 / 316;
 
-function captureVideoFrame(video: HTMLVideoElement) {
+function captureVideoFrame(video: HTMLVideoElement, filterCss: string = "none") {
   const sourceWidth = video.videoWidth;
   const sourceHeight = video.videoHeight;
   if (!sourceWidth || !sourceHeight) throw new Error("카메라 화면이 아직 준비되지 않았습니다.");
@@ -146,6 +158,8 @@ function captureVideoFrame(video: HTMLVideoElement) {
   // 전면 카메라 미리보기(좌우 반전)와 동일하게 보이도록 좌우 반전해 저장합니다.
   context.translate(outputWidth, 0);
   context.scale(-1, 1);
+  // 선택한 필터를 촬영 순간 그대로 구워 넣습니다(미리보기 CSS filter 와 같은 값).
+  if (filterCss && filterCss !== "none") context.filter = filterCss;
   context.drawImage(video, sourceX, sourceY, cropWidth, cropHeight, 0, 0, outputWidth, outputHeight);
   return canvas.toDataURL("image/jpeg", 0.92);
 }
@@ -240,7 +254,7 @@ async function composeFourCut(images: string[], theme: Theme, eventName: string)
   return canvas.toDataURL("image/jpeg", 0.95);
 }
 
-function makeSampleFrames() {
+function makeSampleFrames(filterCss: string = "none") {
   const palettes = [
     ["#f7b3c9", "#814d6a"],
     ["#a8d9d4", "#2b716f"],
@@ -252,6 +266,7 @@ function makeSampleFrames() {
     canvas.width = 1200;
     canvas.height = 800;
     const context = canvas.getContext("2d")!;
+    if (filterCss && filterCss !== "none") context.filter = filterCss;
     context.fillStyle = background;
     context.fillRect(0, 0, canvas.width, canvas.height);
     context.fillStyle = "rgba(255,255,255,.5)";
@@ -296,6 +311,7 @@ function Icon({ name }: { name: "camera" | "qr" | "print" | "download" | "redo" 
 export default function App() {
   const [phase, setPhase] = useState<Phase>("welcome");
   const [themeKey, setThemeKey] = useState<ThemeKey>("sunny");
+  const [filterKey, setFilterKey] = useState<FilterKey>("none");
   const [eventName, setEventName] = useState("너와 나 그리고 우리");
   const [privacyChecked, setPrivacyChecked] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
@@ -311,6 +327,7 @@ export default function App() {
   const streamRef = useRef<MediaStream | null>(null);
 
   const theme = THEMES[themeKey];
+  const activeFilter = FILTERS.find((item) => item.key === filterKey) ?? FILTERS[0];
 
   useEffect(() => {
     if (new URLSearchParams(window.location.search).get("sample") === "1") {
@@ -383,7 +400,7 @@ export default function App() {
         setCountdown(null);
         setFlash(true);
         await sleep(90);
-        const frame = captureVideoFrame(videoRef.current);
+        const frame = captureVideoFrame(videoRef.current, activeFilter.css);
         frames.push(frame);
         setShots((previous) => [...previous, frame]);
         setShotCount(index + 1);
@@ -407,7 +424,7 @@ export default function App() {
 
   const openSample = async () => {
     setError(null);
-    const result = await composeFourCut(makeSampleFrames(), theme, eventName);
+    const result = await composeFourCut(makeSampleFrames(activeFilter.css), theme, eventName);
     setComposite(result);
     setPhase("preview");
   };
@@ -500,6 +517,23 @@ export default function App() {
               </div>
             </fieldset>
 
+            <fieldset className="filter-picker">
+              <legend>사진 필터</legend>
+              <div className="filter-options">
+                {FILTERS.map((option) => (
+                  <button
+                    type="button"
+                    className={`filter-chip ${filterKey === option.key ? "selected" : ""}`}
+                    onClick={() => setFilterKey(option.key)}
+                    key={option.key}
+                    aria-pressed={filterKey === option.key}
+                  >
+                    {option.name}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+
             <label className="privacy-check">
               <input type="checkbox" checked={privacyChecked} onChange={(event) => setPrivacyChecked(event.target.checked)} />
               <span><strong>촬영 안내를 확인했어요.</strong><small>사진은 서버로 전송되지 않고 이 iPad에서만 만들어져요.</small></span>
@@ -525,6 +559,7 @@ export default function App() {
                 playsInline
                 onCanPlay={() => setCameraReady(true)}
                 aria-label="카메라 미리보기"
+                style={{ filter: activeFilter.css === "none" ? undefined : activeFilter.css }}
               />
               <div className="camera-vignette" />
               <div className={`flash ${flash ? "active" : ""}`} />
