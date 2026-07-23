@@ -386,10 +386,15 @@ export default function App() {
   const [composite, setComposite] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const glowVideoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
   const theme = THEMES[themeKey];
   const activeFilter = FILTERS.find((item) => item.key === filterKey) ?? FILTERS[0];
+  // 라이브 미리보기용 값: 기본 보정(메인 레이어)과 글로우 레이어(스크린 블렌드) 세기
+  const previewFilter = activeFilter.previewCss ?? activeFilter.css;
+  const glowStrength = activeFilter.bloom ?? 0;
+  const glowLayerFilter = `${activeFilter.css === "none" ? "" : activeFilter.css} blur(10px) brightness(1.32)`.trim();
 
   useEffect(() => {
     if (new URLSearchParams(window.location.search).get("sample") === "1") {
@@ -411,9 +416,12 @@ export default function App() {
   useEffect(() => () => stopCamera(), []);
 
   useEffect(() => {
-    if (phase === "camera" && videoRef.current && streamRef.current) {
-      videoRef.current.srcObject = streamRef.current;
-      videoRef.current.play().catch(() => undefined);
+    if (phase === "camera" && streamRef.current) {
+      for (const element of [videoRef.current, glowVideoRef.current]) {
+        if (!element) continue;
+        element.srcObject = streamRef.current;
+        element.play().catch(() => undefined);
+      }
     }
   }, [phase]);
 
@@ -599,12 +607,22 @@ export default function App() {
             <div className="camera-frame">
               <video
                 ref={videoRef}
+                className="cam-video"
                 autoPlay
                 muted
                 playsInline
                 onCanPlay={() => setCameraReady(true)}
                 aria-label="카메라 미리보기"
-                style={{ filter: (() => { const f = activeFilter.previewCss ?? activeFilter.css; return f === "none" ? undefined : f; })() }}
+                style={{ filter: previewFilter === "none" ? undefined : previewFilter }}
+              />
+              <video
+                ref={glowVideoRef}
+                className="cam-video cam-glow"
+                autoPlay
+                muted
+                playsInline
+                aria-hidden="true"
+                style={{ filter: glowLayerFilter, opacity: glowStrength * 0.72 }}
               />
               <div className="camera-vignette" />
               <div className={`flash ${flash ? "active" : ""}`} />

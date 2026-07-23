@@ -517,11 +517,19 @@ button:disabled {
   box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.55), 0 24px 60px rgba(0, 0, 0, 0.45);
 }
 
-.camera-frame video {
+.cam-video {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
   transform: scaleX(-1);
+}
+
+/* 흐릿하게 밝힌 사본을 screen 블렌드로 얹어, 미리보기에도 실제 뽀샤시 글로우를 보여줍니다. */
+.cam-glow {
+  mix-blend-mode: screen;
+  pointer-events: none;
 }
 
 .camera-vignette {
@@ -557,9 +565,9 @@ button:disabled {
   bottom: max(16px, env(safe-area-inset-bottom));
   left: 50%;
   display: flex;
-  gap: 7px;
-  max-width: calc(100% - 28px);
-  padding: 7px;
+  gap: 8px;
+  max-width: calc(100% - 24px);
+  padding: 8px;
   border-radius: 999px;
   background: rgba(17, 24, 39, 0.55);
   backdrop-filter: blur(14px);
@@ -575,12 +583,12 @@ button:disabled {
 
 .cam-filter-chip {
   flex: 0 0 auto;
-  padding: 9px 15px;
+  padding: 13px 21px;
   border: 1.5px solid rgba(255, 255, 255, 0.28);
   border-radius: 999px;
   color: #fff;
   background: transparent;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 800;
   white-space: nowrap;
   transition: 0.15s;
