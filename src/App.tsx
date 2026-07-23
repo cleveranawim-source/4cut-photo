@@ -322,9 +322,15 @@ function filterCanvasPixels(context: CanvasRenderingContext2D, width: number, he
   context.putImageData(image, 0, 0);
 }
 
-// 약한 소프트닝(피부 결 정리) 폴백 — 미리보기의 blur(1.4px) 상당.
-// CSS blur(N px)는 σ=N/2 가우시안이므로, 3픽셀 분리형 박스 블러 2회 ≈ σ0.8 로 근사합니다.
-function softenPixels(context: CanvasRenderingContext2D, width: number, height: number, passes: number) {
+// 약한 소프트닝(피부 결 정리) 폴백 — 미리보기의 blur(N px) = σ N/2 가우시안을
+// 분리형 3탭 커널 [w, 1-2w, w] 로 근사합니다. 커널 분산 = 2w 이므로 w = σ²/(2·패스수).
+// 고정 박스(σ0.58)가 아니라 σ에 맞춘 가변 커널이라 화사(blur 0.6px, σ0.33)처럼
+// 아주 약한 블러도 미리보기보다 과하게 뭉개지 않습니다.
+function softenPixels(context: CanvasRenderingContext2D, width: number, height: number, sigma: number) {
+  const passes = sigma > 0.81 ? 2 : 1;
+  const w = Math.min(1 / 3, (sigma * sigma) / (2 * passes));
+  if (w <= 0.005) return;
+  const center = 1 - 2 * w;
   const image = context.getImageData(0, 0, width, height);
   const data = image.data;
   const line = new Float32Array(Math.max(width, height) * 3);
@@ -340,9 +346,9 @@ function softenPixels(context: CanvasRenderingContext2D, width: number, height: 
       }
       for (let x = 1; x < width - 1; x += 1) {
         const i = rowStart + x * 4;
-        data[i] = (line[(x - 1) * 3] + line[x * 3] + line[(x + 1) * 3]) / 3;
-        data[i + 1] = (line[(x - 1) * 3 + 1] + line[x * 3 + 1] + line[(x + 1) * 3 + 1]) / 3;
-        data[i + 2] = (line[(x - 1) * 3 + 2] + line[x * 3 + 2] + line[(x + 1) * 3 + 2]) / 3;
+        data[i] = line[(x - 1) * 3] * w + line[x * 3] * center + line[(x + 1) * 3] * w;
+        data[i + 1] = line[(x - 1) * 3 + 1] * w + line[x * 3 + 1] * center + line[(x + 1) * 3 + 1] * w;
+        data[i + 2] = line[(x - 1) * 3 + 2] * w + line[x * 3 + 2] * center + line[(x + 1) * 3 + 2] * w;
       }
     }
     // 세로 방향
@@ -355,9 +361,9 @@ function softenPixels(context: CanvasRenderingContext2D, width: number, height: 
       }
       for (let y = 1; y < height - 1; y += 1) {
         const i = (y * width + x) * 4;
-        data[i] = (line[(y - 1) * 3] + line[y * 3] + line[(y + 1) * 3]) / 3;
-        data[i + 1] = (line[(y - 1) * 3 + 1] + line[y * 3 + 1] + line[(y + 1) * 3 + 1]) / 3;
-        data[i + 2] = (line[(y - 1) * 3 + 2] + line[y * 3 + 2] + line[(y + 1) * 3 + 2]) / 3;
+        data[i] = line[(y - 1) * 3] * w + line[y * 3] * center + line[(y + 1) * 3] * w;
+        data[i + 1] = line[(y - 1) * 3 + 1] * w + line[y * 3 + 1] * center + line[(y + 1) * 3 + 1] * w;
+        data[i + 2] = line[(y - 1) * 3 + 2] * w + line[y * 3 + 2] * center + line[(y + 1) * 3 + 2] * w;
       }
     }
   }
@@ -501,9 +507,8 @@ function bakePreviewLook(source: HTMLCanvasElement, filter: FilterDef): HTMLCanv
       const context = main.getContext("2d", { alpha: false })!;
       filterCanvasPixels(context, width, height, mainCss);
       const blurPx = extractBlurPx(mainCss) * scale;
-      // CSS blur(N)=σ N/2 → 3px 박스 블러 1회 ≈ σ0.58, 2회 ≈ σ0.82
-      if (blurPx >= 1) softenPixels(context, width, height, 2);
-      else if (blurPx > 0.3) softenPixels(context, width, height, 1);
+      // CSS blur(N px) = σ N/2 — σ를 그대로 전달해 커널이 세기를 맞춥니다
+      if (blurPx > 0.2) softenPixels(context, width, height, blurPx / 2);
     }
   }
 
@@ -795,13 +800,15 @@ export default function App() {
     }
   };
 
-  // 촬영 내내 일정 간격으로 720p(좌우 반전) 스냅샷을 모읍니다. 나중에 빠르게 이어붙여 타임랩스로 만듭니다.
-  const TIMELAPSE = { intervalMs: 400, maxFrames: 60, playbackFps: 18 };
+  // 촬영 내내 일정 간격으로 540p(좌우 반전) 스냅샷을 모읍니다. 나중에 빠르게 이어붙여 타임랩스로 만듭니다.
+  // 재미용 보너스 영상이므로 540p·짧은 재생시간으로 가볍게 — 생성(실시간 재생 녹화)도
+  // 공유 시트 준비도 빨라집니다.
+  const TIMELAPSE = { intervalMs: 450, maxFrames: 50, playbackFps: 20, width: 960, height: 540 };
 
   const startTimelapseCapture = () => {
     const snapCanvas = document.createElement("canvas");
-    snapCanvas.width = 1280;
-    snapCanvas.height = 720;
+    snapCanvas.width = TIMELAPSE.width;
+    snapCanvas.height = TIMELAPSE.height;
     const snapContext = snapCanvas.getContext("2d", { alpha: false });
     const frames: string[] = [];
     let active = true;
@@ -814,9 +821,9 @@ export default function App() {
       if (snapContext && source && source.videoWidth && frames.length < TIMELAPSE.maxFrames) {
         last = now;
         snapContext.save();
-        snapContext.translate(1280, 0);
+        snapContext.translate(TIMELAPSE.width, 0);
         snapContext.scale(-1, 1);
-        drawCover(snapContext, source, source.videoWidth, source.videoHeight, 0, 0, 1280, 720);
+        drawCover(snapContext, source, source.videoWidth, source.videoHeight, 0, 0, TIMELAPSE.width, TIMELAPSE.height);
         snapContext.restore();
         frames.push(snapCanvas.toDataURL("image/jpeg", 0.8));
       }
@@ -836,8 +843,8 @@ export default function App() {
     try {
       const images = await Promise.all(frameUrls.map(loadImage));
       const canvas = document.createElement("canvas");
-      canvas.width = 1280;
-      canvas.height = 720;
+      canvas.width = TIMELAPSE.width;
+      canvas.height = TIMELAPSE.height;
       const context = canvas.getContext("2d", { alpha: false });
       if (!context) return null;
       const recStream = canvas.captureStream(TIMELAPSE.playbackFps);
@@ -852,7 +859,7 @@ export default function App() {
         typeof MediaRecorder.isTypeSupported === "function" && MediaRecorder.isTypeSupported(type);
       const mime = candidates.find(isSupported) || "";
       const recorder = mime
-        ? new MediaRecorder(recStream, { mimeType: mime, videoBitsPerSecond: 4_000_000 })
+        ? new MediaRecorder(recStream, { mimeType: mime, videoBitsPerSecond: 2_500_000 })
         : new MediaRecorder(recStream);
       const chunks: BlobPart[] = [];
       recorder.ondataavailable = (event) => {
@@ -861,13 +868,13 @@ export default function App() {
       const stopped = new Promise<void>((resolve) => {
         recorder.onstop = () => resolve();
       });
-      context.drawImage(images[0], 0, 0, 1280, 720);
+      context.drawImage(images[0], 0, 0, TIMELAPSE.width, TIMELAPSE.height);
       recorder.start();
       for (const image of images) {
-        context.drawImage(image, 0, 0, 1280, 720);
+        context.drawImage(image, 0, 0, TIMELAPSE.width, TIMELAPSE.height);
         await sleep(1000 / TIMELAPSE.playbackFps);
       }
-      await sleep(400); // 마지막 프레임 잠깐 유지
+      await sleep(300); // 마지막 프레임 잠깐 유지
       recorder.stop();
       await stopped;
       const type = mime || "video/webm";
@@ -1354,7 +1361,7 @@ export default function App() {
               </button>
               {clip && (
                 <button className="action-button" onClick={saveClip}>
-                  <Icon name="video" /><span><strong>타임랩스 영상 저장</strong><small>촬영 과정 720p 타임랩스</small></span>
+                  <Icon name="video" /><span><strong>타임랩스 영상 저장</strong><small>촬영 과정 타임랩스</small></span>
                 </button>
               )}
             </div>
