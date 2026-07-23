@@ -304,24 +304,25 @@ function applyGlow(
   height: number,
   strength: number,
 ) {
-  const blurred = makeBlurredCanvas(canvas, width, height, 16);
+  // 원본 디테일을 유지하기 위해 흐림은 약하게(축소 배율 작게) 만들고, 글로우는 선명한 원본 위에 얹습니다.
+  const blurred = makeBlurredCanvas(canvas, width, height, 9);
   const glow = document.createElement("canvas");
   glow.width = width;
   glow.height = height;
   const glowContext = glow.getContext("2d")!;
   glowContext.drawImage(blurred, 0, 0);
-  filterCanvasPixels(glowContext, width, height, "brightness(1.35)");
-  // ① 소프트닝
-  context.globalCompositeOperation = "source-over";
-  context.globalAlpha = Math.min(0.55, strength * 0.45);
-  context.drawImage(blurred, 0, 0);
-  // ② 글로우(screen)
+  filterCanvasPixels(glowContext, width, height, "brightness(1.45)");
+  // ① 글로우: 밝힌 흐릿한 사본을 screen 으로 얹기 — 선명한 원본은 그대로 두고 밝은 부분만 은은히 번짐
   context.globalCompositeOperation = "screen";
-  context.globalAlpha = strength * 0.68;
+  context.globalAlpha = strength * 0.55;
   context.drawImage(glow, 0, 0);
-  // ③ 하이키 베일
+  // ② 아주 옅은 소프트닝(피부 결만 살짝) — 디테일이 뭉개지지 않게 낮게
   context.globalCompositeOperation = "source-over";
-  context.globalAlpha = strength * 0.09;
+  context.globalAlpha = strength * 0.16;
+  context.drawImage(blurred, 0, 0);
+  // ③ 옅은 하이키 베일
+  context.globalCompositeOperation = "source-over";
+  context.globalAlpha = strength * 0.06;
   context.fillStyle = "#fff";
   context.fillRect(0, 0, width, height);
   // 원상 복구
