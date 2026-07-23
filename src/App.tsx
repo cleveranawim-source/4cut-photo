@@ -564,35 +564,52 @@ export default function App() {
     }
   };
 
-  // 촬영 시작~마지막 컷까지의 라이브 화면을 720p(좌우 반전)로 캔버스에 그려 녹화합니다.
-  const startClipRecording = () => {
-    const stream = streamRef.current;
-    if (!stream || typeof MediaRecorder === "undefined") return null;
-    try {
-      const recCanvas = document.createElement("canvas");
-      recCanvas.width = 1280;
-      recCanvas.height = 720;
-      const recContext = recCanvas.getContext("2d", { alpha: false });
-      let active = true;
-      const frameInterval = 1000 / 12; // 12fps
-      let lastDraw = 0;
-      const draw = (now: number) => {
-        if (!active) return;
-        requestAnimationFrame(draw);
-        if (now - lastDraw < frameInterval) return;
-        lastDraw = now;
-        const source = videoRef.current;
-        if (recContext && source && source.videoWidth) {
-          recContext.save();
-          recContext.translate(1280, 0);
-          recContext.scale(-1, 1);
-          drawCover(recContext, source, source.videoWidth, source.videoHeight, 0, 0, 1280, 720);
-          recContext.restore();
-        }
-      };
-      requestAnimationFrame(draw);
+  // 촬영 내내 일정 간격으로 720p(좌우 반전) 스냅샷을 모읍니다. 나중에 빠르게 이어붙여 타임랩스로 만듭니다.
+  const TIMELAPSE = { intervalMs: 400, maxFrames: 60, playbackFps: 18 };
 
-      const recStream = recCanvas.captureStream(12);
+  const startTimelapseCapture = () => {
+    const snapCanvas = document.createElement("canvas");
+    snapCanvas.width = 1280;
+    snapCanvas.height = 720;
+    const snapContext = snapCanvas.getContext("2d", { alpha: false });
+    const frames: string[] = [];
+    let active = true;
+    let last = -Infinity;
+    const tick = (now: number) => {
+      if (!active) return;
+      requestAnimationFrame(tick);
+      if (now - last < TIMELAPSE.intervalMs) return;
+      const source = videoRef.current;
+      if (snapContext && source && source.videoWidth && frames.length < TIMELAPSE.maxFrames) {
+        last = now;
+        snapContext.save();
+        snapContext.translate(1280, 0);
+        snapContext.scale(-1, 1);
+        drawCover(snapContext, source, source.videoWidth, source.videoHeight, 0, 0, 1280, 720);
+        snapContext.restore();
+        frames.push(snapCanvas.toDataURL("image/jpeg", 0.8));
+      }
+    };
+    requestAnimationFrame(tick);
+    return {
+      stop: () => {
+        active = false;
+        return frames;
+      },
+    };
+  };
+
+  // 모은 스냅샷들을 playbackFps 로 재생하며 녹화 → 짧은 타임랩스 영상 파일을 만듭니다.
+  const buildTimelapse = async (frameUrls: string[]) => {
+    if (frameUrls.length < 2 || typeof MediaRecorder === "undefined") return null;
+    try {
+      const images = await Promise.all(frameUrls.map(loadImage));
+      const canvas = document.createElement("canvas");
+      canvas.width = 1280;
+      canvas.height = 720;
+      const context = canvas.getContext("2d", { alpha: false });
+      if (!context) return null;
+      const recStream = canvas.captureStream(TIMELAPSE.playbackFps);
       const candidates = [
         "video/mp4;codecs=avc1",
         "video/mp4",
@@ -610,34 +627,23 @@ export default function App() {
       recorder.ondataavailable = (event) => {
         if (event.data && event.data.size) chunks.push(event.data);
       };
-      // 타임슬라이스로 주기적 저장 — 마지막 flush 실패에 덜 취약합니다.
-      recorder.start(1000);
-
-      const stop = () =>
-        new Promise<{ url: string; blob: Blob; ext: string } | null>((resolve) => {
-          if (recorder.state === "inactive") {
-            active = false;
-            resolve(null);
-            return;
-          }
-          recorder.onstop = () => {
-            active = false;
-            const type = mime || "video/webm";
-            const blob = new Blob(chunks, { type });
-            resolve(
-              blob.size
-                ? { url: URL.createObjectURL(blob), blob, ext: type.includes("mp4") ? "mp4" : "webm" }
-                : null,
-            );
-          };
-          try {
-            recorder.stop();
-          } catch {
-            active = false;
-            resolve(null);
-          }
-        });
-      return { stop };
+      const stopped = new Promise<void>((resolve) => {
+        recorder.onstop = () => resolve();
+      });
+      context.drawImage(images[0], 0, 0, 1280, 720);
+      recorder.start();
+      for (const image of images) {
+        context.drawImage(image, 0, 0, 1280, 720);
+        await sleep(1000 / TIMELAPSE.playbackFps);
+      }
+      await sleep(400); // 마지막 프레임 잠깐 유지
+      recorder.stop();
+      await stopped;
+      const type = mime || "video/webm";
+      const blob = new Blob(chunks, { type });
+      return blob.size
+        ? { url: URL.createObjectURL(blob), blob, ext: type.includes("mp4") ? "mp4" : "webm" }
+        : null;
     } catch {
       return null;
     }
@@ -645,7 +651,7 @@ export default function App() {
 
   const saveClip = async () => {
     if (!clip) return;
-    const file = new File([clip.blob], `네컷영상-${new Date().toISOString().slice(0, 10)}.${clip.ext}`, {
+    const file = new File([clip.blob], `네컷타임랩스-${new Date().toISOString().slice(0, 10)}.${clip.ext}`, {
       type: clip.blob.type,
     });
     try {
@@ -669,7 +675,7 @@ export default function App() {
     setShots([]);
     setClip(null);
     const frames: string[] = [];
-    const recording = startClipRecording();
+    const timelapse = startTimelapseCapture();
     try {
       for (let index = 0; index < 4; index += 1) {
         setStatus(`${index + 1}번째 사진을 준비하세요`);
@@ -688,11 +694,11 @@ export default function App() {
         setFlash(false);
         if (index < 3) await sleep(650);
       }
-      // 마지막 컷까지 끝 → 녹화 종료 후 저장용으로 보관
-      if (recording) {
-        const captured = await recording.stop();
-        if (captured) setClip(captured);
-      }
+      // 마지막 컷까지 끝 → 모은 스냅샷으로 타임랩스 영상 생성
+      const snapshots = timelapse.stop();
+      setStatus("타임랩스 영상 만드는 중…");
+      const captured = await buildTimelapse(snapshots);
+      if (captured) setClip(captured);
       setStatus("네컷 사진을 꾸미고 있어요");
       const result = await composeFourCut(frames, theme, eventName);
       setComposite(result);
@@ -700,7 +706,7 @@ export default function App() {
       setCameraReady(false);
       setPhase("preview");
     } catch (caught) {
-      if (recording) await recording.stop().catch(() => null);
+      timelapse.stop();
       setError(caught instanceof Error ? caught.message : "촬영 중 문제가 생겼습니다.");
     } finally {
       setCountdown(null);
@@ -914,7 +920,7 @@ export default function App() {
               </button>
               {clip && (
                 <button className="action-button" onClick={saveClip}>
-                  <Icon name="video" /><span><strong>촬영 영상 저장</strong><small>촬영 과정 720p 영상</small></span>
+                  <Icon name="video" /><span><strong>타임랩스 영상 저장</strong><small>촬영 과정 720p 타임랩스</small></span>
                 </button>
               )}
             </div>
