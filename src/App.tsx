@@ -260,12 +260,12 @@ function makeBlurredCanvas(source: HTMLCanvasElement, width: number, height: num
 // 촬영 순간 화면을 인쇄 셀과 같은 가로세로비(PHOTO_RATIO)로 중앙 크롭합니다.
 const PHOTO_RATIO = 520 / 316;
 
-function captureVideoFrame(video: HTMLVideoElement, filterCss: string = "none", bloom: number = 0) {
+// 라이브 프레임 한 장을 인쇄 비율로 중앙 크롭 + 좌우 반전해 캔버스로 만듭니다(필터 미적용).
+function grabFrame(video: HTMLVideoElement): HTMLCanvasElement {
   const sourceWidth = video.videoWidth;
   const sourceHeight = video.videoHeight;
   if (!sourceWidth || !sourceHeight) throw new Error("카메라 화면이 아직 준비되지 않았습니다.");
 
-  // 원본 프레임을 인쇄 비율로 중앙 크롭(cover)합니다.
   let cropWidth = sourceWidth;
   let cropHeight = Math.round(sourceWidth / PHOTO_RATIO);
   if (cropHeight > sourceHeight) {
@@ -283,15 +283,58 @@ function captureVideoFrame(video: HTMLVideoElement, filterCss: string = "none", 
   const context = canvas.getContext("2d", { alpha: false });
   if (!context) throw new Error("사진을 만들 수 없습니다.");
   // 전면 카메라 미리보기(좌우 반전)와 동일하게 보이도록 좌우 반전해 저장합니다.
-  context.save();
   context.translate(outputWidth, 0);
   context.scale(-1, 1);
   context.drawImage(video, sourceX, sourceY, cropWidth, cropHeight, 0, 0, outputWidth, outputHeight);
-  context.restore();
+  context.setTransform(1, 0, 0, 1, 0, 0); // 이후 연산을 위해 변환 초기화
+  return canvas;
+}
+
+// 선명도 점수(인접 픽셀 밝기차의 합) — 클수록 덜 흔들린(또렷한) 프레임입니다.
+function sharpnessScore(canvas: HTMLCanvasElement): number {
+  const width = canvas.width;
+  const height = canvas.height;
+  const context = canvas.getContext("2d", { alpha: false });
+  if (!context) return 0;
+  const data = context.getImageData(0, 0, width, height).data;
+  const step = 2; // 2픽셀 간격 샘플링으로 속도 확보
+  const luma = (i: number) => data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+  let sum = 0;
+  for (let y = step; y < height; y += step) {
+    for (let x = step; x < width; x += step) {
+      const i = (y * width + x) * 4;
+      const left = (y * width + (x - step)) * 4;
+      const up = ((y - step) * width + x) * 4;
+      const value = luma(i);
+      sum += Math.abs(value - luma(left)) + Math.abs(value - luma(up));
+    }
+  }
+  return sum;
+}
+
+async function captureVideoFrame(video: HTMLVideoElement, filterCss: string = "none", bloom: number = 0) {
+  // 짧은 순간 여러 프레임을 잡아 가장 선명한(덜 흔들린) 프레임을 고릅니다 — 모션 블러 완화.
+  let best: HTMLCanvasElement | null = null;
+  let bestScore = -1;
+  const attempts = 4;
+  for (let i = 0; i < attempts; i += 1) {
+    const candidate = grabFrame(video);
+    const score = sharpnessScore(candidate);
+    if (score > bestScore) {
+      bestScore = score;
+      best = candidate;
+    }
+    if (i < attempts - 1) await sleep(45);
+  }
+
+  const canvas = best as HTMLCanvasElement;
+  const width = canvas.width;
+  const height = canvas.height;
+  const context = canvas.getContext("2d", { alpha: false })!;
   // 선택한 필터를 픽셀 연산으로 굽습니다(미리보기 CSS filter 와 같은 결과, 모든 기기 지원).
-  if (filterCss && filterCss !== "none") filterCanvasPixels(context, outputWidth, outputHeight, filterCss);
+  if (filterCss && filterCss !== "none") filterCanvasPixels(context, width, height, filterCss);
   // 뽀샤시 글로우
-  if (bloom > 0) applyGlow(canvas, context, outputWidth, outputHeight, bloom);
+  if (bloom > 0) applyGlow(canvas, context, width, height, bloom);
   return canvas.toDataURL("image/jpeg", 0.92);
 }
 
@@ -686,7 +729,7 @@ export default function App() {
         setCountdown(null);
         setFlash(true);
         await sleep(90);
-        const frame = captureVideoFrame(videoRef.current, activeFilter.css, activeFilter.bloom ?? 0);
+        const frame = await captureVideoFrame(videoRef.current, activeFilter.css, activeFilter.bloom ?? 0);
         frames.push(frame);
         setShots((previous) => [...previous, frame]);
         setShotCount(index + 1);
