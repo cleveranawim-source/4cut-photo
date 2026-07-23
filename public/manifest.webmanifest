@@ -1,0 +1,19 @@
+{
+  "name": "우리들의 네컷사진관",
+  "short_name": "네컷사진관",
+  "description": "iPad로 찍고, AirPrint로 인화하는 네컷사진관",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "landscape",
+  "background_color": "#fff8ec",
+  "theme_color": "#fff8ec",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
