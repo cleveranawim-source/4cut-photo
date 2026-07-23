@@ -520,6 +520,8 @@ export default function App() {
         element.srcObject = streamRef.current;
         element.play().catch(() => undefined);
       }
+      // 재사용한 스트림은 canplay 가 다시 안 뜰 수 있어, 이미 준비된 경우 바로 활성화합니다.
+      if (videoRef.current && videoRef.current.readyState >= 2) setCameraReady(true);
     }
   }, [phase]);
 
@@ -533,15 +535,20 @@ export default function App() {
       return;
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: {
-          facingMode: "user",
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-        },
-      });
-      streamRef.current = stream;
+      setCameraReady(false);
+      const existing = streamRef.current;
+      const hasLiveStream = !!existing && existing.getVideoTracks().some((track) => track.readyState === "live");
+      if (!hasLiveStream) {
+        // 최초 1회만 권한을 요청하고, 이후에는 이 스트림을 재사용해 권한 팝업이 다시 뜨지 않게 합니다.
+        streamRef.current = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            facingMode: "user",
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
+        });
+      }
       setPhase("camera");
       setStatus("준비되면 촬영 버튼을 눌러주세요");
     } catch (caught) {
@@ -579,7 +586,8 @@ export default function App() {
       setStatus("네컷 사진을 꾸미고 있어요");
       const result = await composeFourCut(frames, theme, eventName);
       setComposite(result);
-      stopCamera();
+      // 스트림은 끄지 않고 유지 — 다음 촬영 때 권한 팝업이 다시 뜨지 않습니다.
+      setCameraReady(false);
       setPhase("preview");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "촬영 중 문제가 생겼습니다.");
@@ -624,7 +632,8 @@ export default function App() {
   };
 
   const reset = () => {
-    stopCamera();
+    // 카메라 스트림은 유지해 다음 촬영 때 권한 팝업이 다시 뜨지 않게 합니다.
+    setCameraReady(false);
     setPhase("welcome");
     setComposite(null);
     setError(null);
