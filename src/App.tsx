@@ -517,23 +517,6 @@ export default function App() {
               </div>
             </fieldset>
 
-            <fieldset className="filter-picker">
-              <legend>사진 필터</legend>
-              <div className="filter-options">
-                {FILTERS.map((option) => (
-                  <button
-                    type="button"
-                    className={`filter-chip ${filterKey === option.key ? "selected" : ""}`}
-                    onClick={() => setFilterKey(option.key)}
-                    key={option.key}
-                    aria-pressed={filterKey === option.key}
-                  >
-                    {option.name}
-                  </button>
-                ))}
-              </div>
-            </fieldset>
-
             <label className="privacy-check">
               <input type="checkbox" checked={privacyChecked} onChange={(event) => setPrivacyChecked(event.target.checked)} />
               <span><strong>촬영 안내를 확인했어요.</strong><small>사진은 서버로 전송되지 않고 이 iPad에서만 만들어져요.</small></span>
@@ -566,6 +549,20 @@ export default function App() {
               {countdown !== null && <div className="countdown" key={countdown}>{countdown}</div>}
             </div>
             <div className="camera-caption">이 사각형 안이 그대로 인쇄돼요 · 자연스럽게 웃어주세요!</div>
+            <div className="camera-filters" role="group" aria-label="사진 필터 선택">
+              {FILTERS.map((option) => (
+                <button
+                  type="button"
+                  className={`cam-filter-chip ${filterKey === option.key ? "selected" : ""}`}
+                  onClick={() => setFilterKey(option.key)}
+                  disabled={shooting}
+                  key={option.key}
+                  aria-pressed={filterKey === option.key}
+                >
+                  {option.name}
+                </button>
+              ))}
+            </div>
           </section>
           <aside className="shoot-panel">
             <div>

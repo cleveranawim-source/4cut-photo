@@ -376,36 +376,6 @@ button:disabled {
   font-weight: 700;
 }
 
-.filter-picker {
-  min-width: 0;
-  margin: 18px 0 0;
-  padding: 0;
-  border: 0;
-}
-
-.filter-options {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.filter-chip {
-  padding: 9px 15px;
-  border: 1.5px solid rgba(38, 50, 72, 0.12);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.6);
-  color: #4f5766;
-  font-size: 13px;
-  font-weight: 800;
-  transition: 0.15s;
-}
-
-.filter-chip.selected {
-  border-color: var(--theme-accent);
-  color: #fff;
-  background: var(--theme-accent);
-}
-
 .privacy-check {
   display: flex;
   gap: 11px;
@@ -564,18 +534,66 @@ button:disabled {
 .camera-caption {
   position: absolute;
   z-index: 3;
-  bottom: 48px;
+  top: max(16px, env(safe-area-inset-top));
   left: 50%;
-  padding: 11px 18px;
+  max-width: calc(100% - 32px);
+  padding: 10px 16px;
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 999px;
   color: #fff;
   background: rgba(17, 24, 39, 0.5);
   backdrop-filter: blur(12px);
-  font-size: 14px;
+  -webkit-backdrop-filter: blur(12px);
+  font-size: 13px;
   font-weight: 800;
+  text-align: center;
   transform: translateX(-50%);
+}
+
+/* 촬영 전 라이브 미리보기를 보면서 필터를 고르는 하단 바 */
+.camera-filters {
+  position: absolute;
+  z-index: 4;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  left: 50%;
+  display: flex;
+  gap: 7px;
+  max-width: calc(100% - 28px);
+  padding: 7px;
+  border-radius: 999px;
+  background: rgba(17, 24, 39, 0.55);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  overflow-x: auto;
+  scrollbar-width: none;
+  transform: translateX(-50%);
+}
+
+.camera-filters::-webkit-scrollbar {
+  display: none;
+}
+
+.cam-filter-chip {
+  flex: 0 0 auto;
+  padding: 9px 15px;
+  border: 1.5px solid rgba(255, 255, 255, 0.28);
+  border-radius: 999px;
+  color: #fff;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 800;
   white-space: nowrap;
+  transition: 0.15s;
+}
+
+.cam-filter-chip.selected {
+  border-color: transparent;
+  color: #1a2233;
+  background: #fff;
+}
+
+.cam-filter-chip:disabled {
+  opacity: 0.45;
 }
 
 .flash {
