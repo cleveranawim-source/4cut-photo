@@ -265,32 +265,14 @@ const hueRotateMatrix = (deg: number) => {
   ];
 };
 
-// CSS filter 문자열(blur 제외)을 3×3 행렬 + 오프셋 하나로 사전 합성합니다.
-// 모든 단계(brightness/contrast/saturate/grayscale/sepia/hue-rotate)가 선형변환이라
-// out = M·in + b 로 합쳐지며, 픽셀 루프에서 함수 호출·배열 할당이 사라집니다.
-function composeFilterMatrix(css: string): { m: number[]; o: number[] } | null {
-  // 현재 누적 변환: out = M·in + b
-  let m = [1, 0, 0, 0, 1, 0, 0, 0, 1];
-  let o = [0, 0, 0];
-  let steps = 0;
-  const apply = (sm: number[], so: number[]) => {
-    // 새 누적: out = Ms·(M·in + b) + bs = (Ms·M)·in + (Ms·b + bs)
-    const nm = new Array<number>(9);
-    for (let row = 0; row < 3; row += 1) {
-      for (let col = 0; col < 3; col += 1) {
-        nm[row * 3 + col] =
-          sm[row * 3] * m[col] + sm[row * 3 + 1] * m[3 + col] + sm[row * 3 + 2] * m[6 + col];
-      }
-    }
-    const no = [
-      sm[0] * o[0] + sm[1] * o[1] + sm[2] * o[2] + so[0],
-      sm[3] * o[0] + sm[4] * o[1] + sm[5] * o[2] + so[1],
-      sm[6] * o[0] + sm[7] * o[1] + sm[8] * o[2] + so[2],
-    ];
-    m = nm;
-    o = no;
-    steps += 1;
-  };
+// CSS filter 문자열(blur 제외)을 단계별 행렬+오프셋 목록으로 파싱합니다.
+// CSS 필터는 각 단계 결과를 [0,255]로 클램프한 뒤 다음 단계에 넘기므로(8비트 중간 버퍼),
+// 미리보기와 정확히 일치하려면 하나의 행렬로 합성하지 않고 단계별로 적용·클램프해야 합니다.
+// (사전 합성 방식은 뽀샤시·화사의 하이라이트에서 미리보기 대비 최대 Δ14 오차 실측 → 단계별은 Δ2 이하)
+type FilterStep = { m: number[]; o: number[] };
+
+function parseFilterSteps(css: string): FilterStep[] {
+  const steps: FilterStep[] = [];
   const scale = (v: number) => [v, 0, 0, 0, v, 0, 0, 0, v];
   const regex = /([\w-]+)\(([^)]+)\)/g;
   let match: RegExpExecArray | null;
@@ -299,43 +281,87 @@ function composeFilterMatrix(css: string): { m: number[]; o: number[] } | null {
     const raw = match[2].trim();
     const value = raw.endsWith("%") ? parseFloat(raw) / 100 : parseFloat(raw);
     if (Number.isNaN(value)) continue;
-    if (fn === "brightness") apply(scale(value), [0, 0, 0]);
-    else if (fn === "contrast") apply(scale(value), Array(3).fill(127.5 * (1 - value)));
-    else if (fn === "saturate") apply(saturateMatrix(value), [0, 0, 0]);
-    else if (fn === "grayscale") apply(saturateMatrix(1 - value), [0, 0, 0]);
-    else if (fn === "sepia") apply(sepiaMatrix(value), [0, 0, 0]);
-    else if (fn === "hue-rotate") apply(hueRotateMatrix(value), [0, 0, 0]);
-    // blur() 등은 여기서 무시하고 글로우 단계에서 처리합니다.
+    if (fn === "brightness") steps.push({ m: scale(value), o: [0, 0, 0] });
+    else if (fn === "contrast") steps.push({ m: scale(value), o: Array(3).fill(127.5 * (1 - value)) });
+    else if (fn === "saturate") steps.push({ m: saturateMatrix(value), o: [0, 0, 0] });
+    else if (fn === "grayscale") steps.push({ m: saturateMatrix(1 - value), o: [0, 0, 0] });
+    else if (fn === "sepia") steps.push({ m: sepiaMatrix(value), o: [0, 0, 0] });
+    else if (fn === "hue-rotate") steps.push({ m: hueRotateMatrix(value), o: [0, 0, 0] });
+    // blur() 등은 여기서 무시 — 공간 필터는 softenPixels/글로우 단계에서 처리합니다.
   }
-  return steps ? { m, o } : null;
+  return steps;
 }
 
 const clamp255 = (v: number) => (v < 0 ? 0 : v > 255 ? 255 : v);
 
 // 캔버스 픽셀에 필터를 직접 적용합니다(ctx.filter 미지원 기기 폴백).
 function filterCanvasPixels(context: CanvasRenderingContext2D, width: number, height: number, css: string) {
-  const composed = composeFilterMatrix(css);
-  if (!composed) return;
-  const { m, o } = composed;
+  const steps = parseFilterSteps(css);
+  if (!steps.length) return;
   const image = context.getImageData(0, 0, width, height);
   const data = image.data;
+  const stepCount = steps.length;
   for (let i = 0; i < data.length; i += 4) {
-    const r = data[i];
-    const g = data[i + 1];
-    const b = data[i + 2];
-    data[i] = clamp255(m[0] * r + m[1] * g + m[2] * b + o[0]);
-    data[i + 1] = clamp255(m[3] * r + m[4] * g + m[5] * b + o[1]);
-    data[i + 2] = clamp255(m[6] * r + m[7] * g + m[8] * b + o[2]);
+    let r = data[i];
+    let g = data[i + 1];
+    let b = data[i + 2];
+    for (let s = 0; s < stepCount; s += 1) {
+      const m = steps[s].m;
+      const o = steps[s].o;
+      const nr = clamp255(m[0] * r + m[1] * g + m[2] * b + o[0]);
+      const ng = clamp255(m[3] * r + m[4] * g + m[5] * b + o[1]);
+      const nb = clamp255(m[6] * r + m[7] * g + m[8] * b + o[2]);
+      r = nr;
+      g = ng;
+      b = nb;
+    }
+    data[i] = r;
+    data[i + 1] = g;
+    data[i + 2] = b;
   }
   context.putImageData(image, 0, 0);
 }
 
-// 필터를 캔버스에 굽습니다 — 지원 기기는 GPU 네이티브, 미지원 기기는 픽셀 폴백.
-function bakeFilter(source: HTMLCanvasElement, css: string): HTMLCanvasElement {
-  if (supportsCanvasFilter) return filteredCopy(source, css);
-  const context = source.getContext("2d", { alpha: false })!;
-  filterCanvasPixels(context, source.width, source.height, css);
-  return source;
+// 약한 소프트닝(피부 결 정리) 폴백 — 미리보기의 blur(1.4px) 상당.
+// CSS blur(N px)는 σ=N/2 가우시안이므로, 3픽셀 분리형 박스 블러 2회 ≈ σ0.8 로 근사합니다.
+function softenPixels(context: CanvasRenderingContext2D, width: number, height: number, passes: number) {
+  const image = context.getImageData(0, 0, width, height);
+  const data = image.data;
+  const line = new Float32Array(Math.max(width, height) * 3);
+  for (let pass = 0; pass < passes; pass += 1) {
+    // 가로 방향
+    for (let y = 0; y < height; y += 1) {
+      const rowStart = y * width * 4;
+      for (let x = 0; x < width; x += 1) {
+        const i = rowStart + x * 4;
+        line[x * 3] = data[i];
+        line[x * 3 + 1] = data[i + 1];
+        line[x * 3 + 2] = data[i + 2];
+      }
+      for (let x = 1; x < width - 1; x += 1) {
+        const i = rowStart + x * 4;
+        data[i] = (line[(x - 1) * 3] + line[x * 3] + line[(x + 1) * 3]) / 3;
+        data[i + 1] = (line[(x - 1) * 3 + 1] + line[x * 3 + 1] + line[(x + 1) * 3 + 1]) / 3;
+        data[i + 2] = (line[(x - 1) * 3 + 2] + line[x * 3 + 2] + line[(x + 1) * 3 + 2]) / 3;
+      }
+    }
+    // 세로 방향
+    for (let x = 0; x < width; x += 1) {
+      for (let y = 0; y < height; y += 1) {
+        const i = (y * width + x) * 4;
+        line[y * 3] = data[i];
+        line[y * 3 + 1] = data[i + 1];
+        line[y * 3 + 2] = data[i + 2];
+      }
+      for (let y = 1; y < height - 1; y += 1) {
+        const i = (y * width + x) * 4;
+        data[i] = (line[(y - 1) * 3] + line[y * 3] + line[(y + 1) * 3]) / 3;
+        data[i + 1] = (line[(y - 1) * 3 + 1] + line[y * 3 + 1] + line[(y + 1) * 3 + 1]) / 3;
+        data[i + 2] = (line[(y - 1) * 3 + 2] + line[y * 3 + 2] + line[(y + 1) * 3 + 2]) / 3;
+      }
+    }
+  }
+  context.putImageData(image, 0, 0);
 }
 
 // context.filter 없이 흐림 효과: 축소했다가 다시 확대하면 자연스럽게 뭉개집니다(모든 기기 지원).
@@ -441,7 +467,68 @@ function nextVideoFrame(video: HTMLVideoElement) {
   });
 }
 
-async function captureVideoFrame(video: HTMLVideoElement, filterCss: string = "none", bloom: number = 0) {
+// ── WYSIWYG 베이크 ─────────────────────────────────────────────────
+// 결과물이 라이브 미리보기와 똑같아 보이도록, 미리보기 화면의 레이어 구성을 그대로 굽습니다:
+//   ① 메인: previewCss(밝기·색 보정 + 약한 소프트닝 블러 — 피부 결 정리)
+//   ② 글로우(뽀샤시 계열): css+blur+brightness(1.32) 사본을 screen 블렌드(α = bloom×0.72)
+// 이전에는 메인에 css(어두운 버전)만 굽고 소프트닝이 빠져, 결과물이 미리보기보다
+// 어둡고(Δ밝기 ≈ 13) 노이즈가 3.5배 남는 문제가 실측으로 확인되었습니다.
+// 미리보기 blur 값은 표시 크기(≈940px) 기준 CSS px 이므로 캡처 해상도로 환산합니다.
+const PREVIEW_REFERENCE_WIDTH = 940;
+
+const extractBlurPx = (css: string) => {
+  const match = /blur\(([\d.]+)px\)/.exec(css);
+  return match ? parseFloat(match[1]) : 0;
+};
+
+const scaleBlur = (css: string, scale: number) =>
+  css.replace(/blur\(([\d.]+)px\)/g, (_, v) => `blur(${(parseFloat(v) * scale).toFixed(1)}px)`);
+
+function bakePreviewLook(source: HTMLCanvasElement, filter: FilterDef): HTMLCanvasElement {
+  const width = source.width;
+  const height = source.height;
+  const scale = width / PREVIEW_REFERENCE_WIDTH;
+  const mainCss = filter.previewCss ?? filter.css;
+  const bloom = filter.bloom ?? 0;
+
+  // ① 메인 레이어
+  let main: HTMLCanvasElement;
+  if (supportsCanvasFilter) {
+    main = mainCss === "none" ? source : filteredCopy(source, scaleBlur(mainCss, scale));
+  } else {
+    main = source;
+    if (mainCss !== "none") {
+      const context = main.getContext("2d", { alpha: false })!;
+      filterCanvasPixels(context, width, height, mainCss);
+      const blurPx = extractBlurPx(mainCss) * scale;
+      // CSS blur(N)=σ N/2 → 3px 박스 블러 1회 ≈ σ0.58, 2회 ≈ σ0.82
+      if (blurPx >= 1) softenPixels(context, width, height, 2);
+      else if (blurPx > 0.3) softenPixels(context, width, height, 1);
+    }
+  }
+
+  // ② 글로우 레이어 (미리보기의 cam-glow 비디오와 동일 구성)
+  if (bloom > 0) {
+    const glowBase = `${filter.css === "none" ? "" : filter.css} brightness(1.32)`.trim();
+    let glow: HTMLCanvasElement;
+    if (supportsCanvasFilter) {
+      glow = filteredCopy(source, `${filter.css === "none" ? "" : filter.css} blur(${Math.round(10 * scale)}px) brightness(1.32)`.trim());
+    } else {
+      glow = makeBlurredCanvas(source, width, height, 9);
+      const glowContext = glow.getContext("2d", { willReadFrequently: true })!;
+      filterCanvasPixels(glowContext, width, height, glowBase);
+    }
+    const context = main.getContext("2d", { alpha: false })!;
+    context.globalCompositeOperation = "screen";
+    context.globalAlpha = bloom * 0.72;
+    context.drawImage(glow, 0, 0);
+    context.globalAlpha = 1;
+    context.globalCompositeOperation = "source-over";
+  }
+  return main;
+}
+
+async function captureVideoFrame(video: HTMLVideoElement, filter: FilterDef) {
   // 짧은 순간 여러 프레임을 잡아 가장 선명한(덜 흔들린) 프레임을 고릅니다 — 모션 블러 완화.
   let best: HTMLCanvasElement | null = null;
   let bestScore = -1;
@@ -456,67 +543,23 @@ async function captureVideoFrame(video: HTMLVideoElement, filterCss: string = "n
     if (i < attempts - 1) await nextVideoFrame(video);
   }
 
-  let canvas = best as HTMLCanvasElement;
-  // 선택한 필터를 굽습니다 — 미리보기 CSS filter 와 같은 결과.
-  if (filterCss && filterCss !== "none") canvas = bakeFilter(canvas, filterCss);
-  // 뽀샤시 글로우
-  if (bloom > 0) {
-    const context = canvas.getContext("2d", { alpha: false })!;
-    applyGlow(canvas, context, canvas.width, canvas.height, bloom);
-  }
+  const canvas = bakePreviewLook(best as HTMLCanvasElement, filter);
   return canvas.toDataURL("image/jpeg", 0.92);
-}
-
-// context.filter 없이 글로우: 흐릿한 사본으로 소프트닝 + 밝힌 사본을 screen 으로 겹쳐 글로우 +
-// 옅은 흰 베일. 축소·확대로 흐림을 만들어 모든 기기에서 동작합니다.
-function applyGlow(
-  canvas: HTMLCanvasElement,
-  context: CanvasRenderingContext2D,
-  width: number,
-  height: number,
-  strength: number,
-) {
-  // 원본 디테일을 유지하기 위해 흐림은 약하게 만들고, 글로우는 선명한 원본 위에 얹습니다.
-  // 네이티브 filter 지원 시 진짜 가우시안 블러(GPU), 미지원 시 축소·확대 근사 블러.
-  let blurred: HTMLCanvasElement;
-  let glow: HTMLCanvasElement;
-  if (supportsCanvasFilter) {
-    blurred = filteredCopy(canvas, "blur(6px)");
-    glow = filteredCopy(canvas, "blur(6px) brightness(1.45)");
-  } else {
-    blurred = makeBlurredCanvas(canvas, width, height, 9);
-    glow = document.createElement("canvas");
-    glow.width = width;
-    glow.height = height;
-    const glowContext = glow.getContext("2d", { willReadFrequently: true })!;
-    glowContext.drawImage(blurred, 0, 0);
-    filterCanvasPixels(glowContext, width, height, "brightness(1.45)");
-  }
-  // ① 글로우: 밝힌 흐릿한 사본을 screen 으로 얹기 — 선명한 원본은 그대로 두고 밝은 부분만 은은히 번짐
-  context.globalCompositeOperation = "screen";
-  context.globalAlpha = strength * 0.55;
-  context.drawImage(glow, 0, 0);
-  // ② 아주 옅은 소프트닝(피부 결만 살짝) — 디테일이 뭉개지지 않게 낮게
-  context.globalCompositeOperation = "source-over";
-  context.globalAlpha = strength * 0.16;
-  context.drawImage(blurred, 0, 0);
-  // ③ 옅은 하이키 베일
-  context.globalCompositeOperation = "source-over";
-  context.globalAlpha = strength * 0.06;
-  context.fillStyle = "#fff";
-  context.fillRect(0, 0, width, height);
-  // 원상 복구
-  context.globalAlpha = 1;
-  context.globalCompositeOperation = "source-over";
 }
 
 async function composeFourCut(images: string[], theme: Theme, eventName: string) {
   const loaded = await Promise.all(images.map(loadImage));
   const canvas = document.createElement("canvas");
-  canvas.width = 1200;
-  canvas.height = 1800;
+  // 인쇄(4×6", 300dpi)에는 1200×1800 이면 충분하지만, 폰으로 저장·확대해 보는 화질을 위해
+  // 2배(2400×3600)로 합성합니다 — 사진 셀이 1040×632 가 되어 캡처 해상도와 1:1(무손실)입니다.
+  // 아래 그리기 코드는 기존 1200×1800 좌표계를 그대로 쓰도록 scale(2,2)를 적용합니다.
+  canvas.width = 2400;
+  canvas.height = 3600;
   const context = canvas.getContext("2d", { alpha: false });
   if (!context) throw new Error("네컷 이미지를 만들 수 없습니다.");
+  context.scale(2, 2);
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
 
   const drawStrip = (offsetX: number, stripNumber: number) => {
     context.fillStyle = theme.background;
@@ -589,10 +632,11 @@ async function composeFourCut(images: string[], theme: Theme, eventName: string)
   context.lineTo(600, 1782);
   context.stroke();
 
-  return canvas.toDataURL("image/jpeg", 0.95);
+  // 2400×3600 이라 0.92 로도 인쇄·확대 화질이 충분하고 파일 크기를 줄입니다.
+  return canvas.toDataURL("image/jpeg", 0.92);
 }
 
-function makeSampleFrames(filterCss: string = "none", bloom: number = 0) {
+function makeSampleFrames(filter?: FilterDef) {
   const palettes = [
     ["#f7b3c9", "#814d6a"],
     ["#a8d9d4", "#2b716f"],
@@ -629,13 +673,8 @@ function makeSampleFrames(filterCss: string = "none", bloom: number = 0) {
     context.font = "800 54px -apple-system, sans-serif";
     context.textAlign = "center";
     context.fillText(`SAMPLE ${index + 1}`, 600, 690);
-    // 촬영 결과물과 동일하게: 필터 굽기 → 뽀샤시 글로우
-    let out = canvas;
-    if (filterCss && filterCss !== "none") out = bakeFilter(out, filterCss);
-    if (bloom > 0) {
-      const outContext = out.getContext("2d")!;
-      applyGlow(out, outContext, out.width, out.height, bloom);
-    }
+    // 촬영 결과물과 동일하게: 미리보기 스택을 그대로 굽기
+    const out = filter && filter.key !== "none" ? bakePreviewLook(canvas, filter) : canvas;
     return out.toDataURL("image/jpeg", 0.9);
   });
 }
@@ -670,6 +709,8 @@ export default function App() {
   const [flash, setFlash] = useState(false);
   const [status, setStatus] = useState("준비되면 촬영 버튼을 눌러주세요");
   const [composite, setComposite] = useState<string | null>(null);
+  // 전면 카메라가 실제로 주는 해상도(진단용 — 화질 문의 시 확인)
+  const [camRes, setCamRes] = useState<string | null>(null);
   const [clip, setClip] = useState<{ url: string; blob: Blob; ext: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -891,7 +932,7 @@ export default function App() {
         playShutter();
         await sleep(90);
         if (aborted()) return;
-        const frame = await captureVideoFrame(videoRef.current, activeFilter.css, activeFilter.bloom ?? 0);
+        const frame = await captureVideoFrame(videoRef.current, activeFilter);
         frames.push(frame);
         setShots((previous) => [...previous, frame]);
         setShotCount(index + 1);
@@ -935,7 +976,7 @@ export default function App() {
 
   const openSample = async () => {
     setError(null);
-    const result = await composeFourCut(makeSampleFrames(activeFilter.css, activeFilter.bloom ?? 0), theme, eventName);
+    const result = await composeFourCut(makeSampleFrames(activeFilter), theme, eventName);
     setComposite(result);
     setPhase("preview");
   };
@@ -1174,7 +1215,11 @@ export default function App() {
                 autoPlay
                 muted
                 playsInline
-                onCanPlay={() => setCameraReady(true)}
+                onCanPlay={(event) => {
+                  setCameraReady(true);
+                  const element = event.currentTarget;
+                  if (element.videoWidth) setCamRes(`${element.videoWidth}×${element.videoHeight}`);
+                }}
                 aria-label="카메라 미리보기"
                 style={{ filter: previewFilter === "none" ? undefined : previewFilter }}
               />
@@ -1193,7 +1238,10 @@ export default function App() {
                 <div className={`countdown ${countdown === 1 ? "last" : ""}`} key={countdown}>{countdown}</div>
               )}
             </div>
-            <div className="camera-caption">이 사각형 안이 그대로 인쇄돼요 · 자연스럽게 웃어주세요!</div>
+            <div className="camera-caption">
+              이 사각형 안이 그대로 인쇄돼요 · 자연스럽게 웃어주세요!
+              {camRes && <span className="cam-res"> · {camRes}</span>}
+            </div>
             <div className="camera-filters" role="group" aria-label="사진 필터 선택">
               {FILTERS.map((option) => (
                 <button

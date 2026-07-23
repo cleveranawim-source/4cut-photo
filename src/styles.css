@@ -694,6 +694,11 @@ button:disabled {
   pointer-events: none;
 }
 
+.camera-caption .cam-res {
+  opacity: 0.5;
+  font-size: 0.85em;
+}
+
 .camera-caption {
   position: absolute;
   z-index: 3;
