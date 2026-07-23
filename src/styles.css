@@ -646,6 +646,23 @@ button:disabled {
   background: var(--theme-accent);
 }
 
+.shot-progress span.shot-thumb {
+  padding: 0;
+  overflow: hidden;
+  background: #000;
+  animation: thumb-pop 0.3s ease-out;
+}
+
+.shot-progress span img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+@keyframes thumb-pop {
+  from { opacity: 0; transform: scale(0.82); }
+}
+
 @keyframes soft-pulse {
   50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--theme-accent), transparent 88%); }
 }

@@ -302,6 +302,7 @@ export default function App() {
   const [shooting, setShooting] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [shotCount, setShotCount] = useState(0);
+  const [shots, setShots] = useState<string[]>([]);
   const [flash, setFlash] = useState(false);
   const [status, setStatus] = useState("준비되면 촬영 버튼을 눌러주세요");
   const [composite, setComposite] = useState<string | null>(null);
@@ -341,6 +342,7 @@ export default function App() {
     setError(null);
     setComposite(null);
     setShotCount(0);
+    setShots([]);
     if (!navigator.mediaDevices?.getUserMedia) {
       setError("카메라를 사용할 수 없습니다. iPad의 Safari에서 HTTPS 주소로 열어주세요.");
       return;
@@ -369,6 +371,7 @@ export default function App() {
     if (!videoRef.current || !cameraReady || shooting) return;
     setShooting(true);
     setError(null);
+    setShots([]);
     const frames: string[] = [];
     try {
       for (let index = 0; index < 4; index += 1) {
@@ -380,7 +383,9 @@ export default function App() {
         setCountdown(null);
         setFlash(true);
         await sleep(90);
-        frames.push(captureVideoFrame(videoRef.current));
+        const frame = captureVideoFrame(videoRef.current);
+        frames.push(frame);
+        setShots((previous) => [...previous, frame]);
         setShotCount(index + 1);
         await sleep(180);
         setFlash(false);
@@ -535,7 +540,12 @@ export default function App() {
             </div>
             <div className="shot-progress" aria-label={`${shotCount}장 촬영 완료`}>
               {[0, 1, 2, 3].map((index) => (
-                <span className={index < shotCount ? "done" : index === shotCount && shooting ? "current" : ""} key={index}>{index + 1}</span>
+                <span
+                  className={shots[index] ? "done shot-thumb" : index === shotCount && shooting ? "current" : ""}
+                  key={index}
+                >
+                  {shots[index] ? <img src={shots[index]} alt={`${index + 1}번째 사진`} /> : index + 1}
+                </span>
               ))}
             </div>
             {error && <div className="error-message" role="alert">{error}</div>}
