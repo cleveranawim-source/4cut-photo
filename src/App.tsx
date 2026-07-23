@@ -374,14 +374,6 @@ async function composeFourCut(images: string[], theme: Theme, eventName: string)
       context.clip();
       drawCover(context, image, image.naturalWidth, image.naturalHeight, photoX, y, photoWidth, photoHeight);
       context.restore();
-
-      context.fillStyle = theme.accent;
-      context.beginPath();
-      context.arc(photoX + 28, y + 28, 17, 0, Math.PI * 2);
-      context.fill();
-      context.fillStyle = "#ffffff";
-      context.font = "800 18px -apple-system, BlinkMacSystemFont, sans-serif";
-      context.fillText(String(index + 1), photoX + 28, y + 29);
     });
 
     const safeName = eventName.trim() || "오늘의 우리";
