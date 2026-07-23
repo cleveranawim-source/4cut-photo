@@ -70,16 +70,37 @@ const THEMES: Record<ThemeKey, Theme> = {
   },
 };
 
-type FilterKey = "none" | "vivid" | "warm" | "cool" | "mono" | "vintage";
+type FilterKey = "none" | "soft" | "glow" | "vivid" | "warm" | "cool" | "mono" | "vintage";
 
-// CSS filter 문법은 캔버스 context.filter 와 동일해, 미리보기(비디오)와 결과물에 같은 값을 씁니다.
-const FILTERS: { key: FilterKey; name: string; css: string }[] = [
+type FilterDef = {
+  key: FilterKey;
+  name: string;
+  css: string; // 결과물(캔버스)에 굽는 기본 보정. CSS filter 문법과 동일.
+  previewCss?: string; // 라이브 미리보기(비디오)용. 없으면 css 사용.
+  bloom?: number; // 뽀샤시 글로우 세기(0~1). 밝은 부분을 흐릿하게 덧입혀 은은하게 번지게 함.
+};
+
+const FILTERS: FilterDef[] = [
   { key: "none", name: "원본", css: "none" },
-  { key: "vivid", name: "선명", css: "saturate(1.4) contrast(1.08)" },
-  { key: "warm", name: "따뜻", css: "sepia(0.25) saturate(1.28) brightness(1.05)" },
-  { key: "cool", name: "시원", css: "saturate(1.12) contrast(1.05) brightness(1.03) hue-rotate(-10deg)" },
-  { key: "mono", name: "흑백", css: "grayscale(1) contrast(1.06)" },
-  { key: "vintage", name: "빈티지", css: "sepia(0.55) contrast(1.05) brightness(1.02) saturate(1.1)" },
+  {
+    key: "soft",
+    name: "뽀샤시",
+    css: "brightness(1.1) contrast(0.9) saturate(1.05)",
+    previewCss: "brightness(1.14) contrast(0.9) saturate(1.05) blur(0.5px)",
+    bloom: 0.55,
+  },
+  {
+    key: "glow",
+    name: "화사",
+    css: "brightness(1.12) contrast(0.94) saturate(1.12) sepia(0.06)",
+    previewCss: "brightness(1.14) contrast(0.94) saturate(1.12) sepia(0.06) blur(0.3px)",
+    bloom: 0.32,
+  },
+  { key: "vivid", name: "선명", css: "saturate(1.5) contrast(1.12)" },
+  { key: "warm", name: "따뜻", css: "sepia(0.3) saturate(1.35) brightness(1.06)" },
+  { key: "cool", name: "시원", css: "saturate(1.16) contrast(1.05) brightness(1.04) hue-rotate(-12deg)" },
+  { key: "mono", name: "흑백", css: "grayscale(1) contrast(1.1) brightness(1.03)" },
+  { key: "vintage", name: "빈티지", css: "sepia(0.5) contrast(1.02) brightness(1.04) saturate(1.2)" },
 ];
 
 const sleep = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
@@ -133,7 +154,7 @@ function loadImage(source: string) {
 // 촬영 순간 화면을 인쇄 셀과 같은 가로세로비(PHOTO_RATIO)로 중앙 크롭합니다.
 const PHOTO_RATIO = 520 / 316;
 
-function captureVideoFrame(video: HTMLVideoElement, filterCss: string = "none") {
+function captureVideoFrame(video: HTMLVideoElement, filterCss: string = "none", bloom: number = 0) {
   const sourceWidth = video.videoWidth;
   const sourceHeight = video.videoHeight;
   if (!sourceWidth || !sourceHeight) throw new Error("카메라 화면이 아직 준비되지 않았습니다.");
@@ -161,6 +182,16 @@ function captureVideoFrame(video: HTMLVideoElement, filterCss: string = "none") 
   // 선택한 필터를 촬영 순간 그대로 구워 넣습니다(미리보기 CSS filter 와 같은 값).
   if (filterCss && filterCss !== "none") context.filter = filterCss;
   context.drawImage(video, sourceX, sourceY, cropWidth, cropHeight, 0, 0, outputWidth, outputHeight);
+  // 뽀샤시 글로우: 흐릿하게 밝힌 사본을 위에 덧입혀 은은하게 번지는 효과를 만듭니다.
+  if (bloom > 0) {
+    context.filter = `blur(${Math.max(4, Math.round(outputWidth * 0.012))}px) brightness(1.35)`;
+    context.globalCompositeOperation = "lighter";
+    context.globalAlpha = bloom;
+    context.drawImage(video, sourceX, sourceY, cropWidth, cropHeight, 0, 0, outputWidth, outputHeight);
+    context.globalAlpha = 1;
+    context.globalCompositeOperation = "source-over";
+    context.filter = "none";
+  }
   return canvas.toDataURL("image/jpeg", 0.92);
 }
 
@@ -254,7 +285,7 @@ async function composeFourCut(images: string[], theme: Theme, eventName: string)
   return canvas.toDataURL("image/jpeg", 0.95);
 }
 
-function makeSampleFrames(filterCss: string = "none") {
+function makeSampleFrames(filterCss: string = "none", bloom: number = 0) {
   const palettes = [
     ["#f7b3c9", "#814d6a"],
     ["#a8d9d4", "#2b716f"],
@@ -292,6 +323,16 @@ function makeSampleFrames(filterCss: string = "none") {
     context.font = "800 54px -apple-system, sans-serif";
     context.textAlign = "center";
     context.fillText(`SAMPLE ${index + 1}`, 600, 690);
+    // 뽀샤시 글로우(촬영 결과물과 동일한 방식): 흐릿하게 밝힌 사본을 덧입힙니다.
+    if (bloom > 0) {
+      context.filter = "blur(14px) brightness(1.35)";
+      context.globalCompositeOperation = "lighter";
+      context.globalAlpha = bloom;
+      context.drawImage(canvas, 0, 0);
+      context.globalAlpha = 1;
+      context.globalCompositeOperation = "source-over";
+      context.filter = "none";
+    }
     return canvas.toDataURL("image/jpeg", 0.9);
   });
 }
@@ -400,7 +441,7 @@ export default function App() {
         setCountdown(null);
         setFlash(true);
         await sleep(90);
-        const frame = captureVideoFrame(videoRef.current, activeFilter.css);
+        const frame = captureVideoFrame(videoRef.current, activeFilter.css, activeFilter.bloom ?? 0);
         frames.push(frame);
         setShots((previous) => [...previous, frame]);
         setShotCount(index + 1);
@@ -424,7 +465,7 @@ export default function App() {
 
   const openSample = async () => {
     setError(null);
-    const result = await composeFourCut(makeSampleFrames(activeFilter.css), theme, eventName);
+    const result = await composeFourCut(makeSampleFrames(activeFilter.css, activeFilter.bloom ?? 0), theme, eventName);
     setComposite(result);
     setPhase("preview");
   };
@@ -542,7 +583,7 @@ export default function App() {
                 playsInline
                 onCanPlay={() => setCameraReady(true)}
                 aria-label="카메라 미리보기"
-                style={{ filter: activeFilter.css === "none" ? undefined : activeFilter.css }}
+                style={{ filter: (() => { const f = activeFilter.previewCss ?? activeFilter.css; return f === "none" ? undefined : f; })() }}
               />
               <div className="camera-vignette" />
               <div className={`flash ${flash ? "active" : ""}`} />
