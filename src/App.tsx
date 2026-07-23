@@ -85,16 +85,16 @@ const FILTERS: FilterDef[] = [
   {
     key: "soft",
     name: "뽀샤시",
-    css: "brightness(1.1) contrast(0.9) saturate(1.05)",
-    previewCss: "brightness(1.14) contrast(0.9) saturate(1.05) blur(0.5px)",
-    bloom: 0.55,
+    css: "brightness(1.12) contrast(0.9) saturate(1.06) sepia(0.04)",
+    previewCss: "brightness(1.2) contrast(0.9) saturate(1.06) sepia(0.04) blur(1.4px)",
+    bloom: 1,
   },
   {
     key: "glow",
     name: "화사",
-    css: "brightness(1.12) contrast(0.94) saturate(1.12) sepia(0.06)",
-    previewCss: "brightness(1.14) contrast(0.94) saturate(1.12) sepia(0.06) blur(0.3px)",
-    bloom: 0.32,
+    css: "brightness(1.1) contrast(0.94) saturate(1.14) sepia(0.04)",
+    previewCss: "brightness(1.14) contrast(0.94) saturate(1.14) sepia(0.04) blur(0.6px)",
+    bloom: 0.5,
   },
   { key: "vivid", name: "선명", css: "saturate(1.5) contrast(1.12)" },
   { key: "warm", name: "따뜻", css: "sepia(0.3) saturate(1.35) brightness(1.06)" },
@@ -182,17 +182,44 @@ function captureVideoFrame(video: HTMLVideoElement, filterCss: string = "none", 
   // 선택한 필터를 촬영 순간 그대로 구워 넣습니다(미리보기 CSS filter 와 같은 값).
   if (filterCss && filterCss !== "none") context.filter = filterCss;
   context.drawImage(video, sourceX, sourceY, cropWidth, cropHeight, 0, 0, outputWidth, outputHeight);
-  // 뽀샤시 글로우: 흐릿하게 밝힌 사본을 위에 덧입혀 은은하게 번지는 효과를 만듭니다.
+  // 뽀샤시: ① 피부 소프트닝 ② 밝은 부분 글로우 ③ 뽀얀 하이키 베일
   if (bloom > 0) {
-    context.filter = `blur(${Math.max(4, Math.round(outputWidth * 0.012))}px) brightness(1.35)`;
-    context.globalCompositeOperation = "lighter";
-    context.globalAlpha = bloom;
-    context.drawImage(video, sourceX, sourceY, cropWidth, cropHeight, 0, 0, outputWidth, outputHeight);
-    context.globalAlpha = 1;
-    context.globalCompositeOperation = "source-over";
-    context.filter = "none";
+    const drawSource = () =>
+      context.drawImage(video, sourceX, sourceY, cropWidth, cropHeight, 0, 0, outputWidth, outputHeight);
+    applyGlow(context, drawSource, outputWidth, outputHeight, bloom);
   }
   return canvas.toDataURL("image/jpeg", 0.92);
+}
+
+// 흐릿한 사본을 겹쳐 부드럽게 만들고(소프트닝), 밝힌 사본을 더해(글로우), 흰 베일로 뽀얗게 마무리합니다.
+function applyGlow(
+  context: CanvasRenderingContext2D,
+  drawSource: () => void,
+  width: number,
+  height: number,
+  strength: number,
+) {
+  const blurPx = Math.max(5, Math.round(width * 0.02));
+  // ① 소프트닝: 흐릿한 사본을 반투명으로 덮어 피부 결을 부드럽게
+  context.globalCompositeOperation = "source-over";
+  context.globalAlpha = Math.min(0.55, strength * 0.45);
+  context.filter = `blur(${blurPx}px)`;
+  drawSource();
+  // ② 글로우: 밝힌 흐릿한 사본을 screen 으로 겹쳐 밝은 부분이 은은히 번지게(하얗게 날아가지 않음)
+  context.globalCompositeOperation = "screen";
+  context.globalAlpha = strength * 0.68;
+  context.filter = `blur(${blurPx}px) brightness(1.32)`;
+  drawSource();
+  // ③ 하이키 베일: 옅은 흰빛으로 전체를 뽀얗게
+  context.globalCompositeOperation = "source-over";
+  context.globalAlpha = strength * 0.09;
+  context.filter = "none";
+  context.fillStyle = "#fff";
+  context.fillRect(0, 0, width, height);
+  // 원상 복구
+  context.globalAlpha = 1;
+  context.globalCompositeOperation = "source-over";
+  context.filter = "none";
 }
 
 async function composeFourCut(images: string[], theme: Theme, eventName: string) {
@@ -323,15 +350,9 @@ function makeSampleFrames(filterCss: string = "none", bloom: number = 0) {
     context.font = "800 54px -apple-system, sans-serif";
     context.textAlign = "center";
     context.fillText(`SAMPLE ${index + 1}`, 600, 690);
-    // 뽀샤시 글로우(촬영 결과물과 동일한 방식): 흐릿하게 밝힌 사본을 덧입힙니다.
+    // 뽀샤시 글로우(촬영 결과물과 동일한 방식)
     if (bloom > 0) {
-      context.filter = "blur(14px) brightness(1.35)";
-      context.globalCompositeOperation = "lighter";
-      context.globalAlpha = bloom;
-      context.drawImage(canvas, 0, 0);
-      context.globalAlpha = 1;
-      context.globalCompositeOperation = "source-over";
-      context.filter = "none";
+      applyGlow(context, () => context.drawImage(canvas, 0, 0), canvas.width, canvas.height, bloom);
     }
     return canvas.toDataURL("image/jpeg", 0.9);
   });
