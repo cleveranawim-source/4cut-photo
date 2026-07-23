@@ -574,8 +574,13 @@ export default function App() {
       recCanvas.height = 720;
       const recContext = recCanvas.getContext("2d", { alpha: false });
       let active = true;
-      const draw = () => {
+      const frameInterval = 1000 / 12; // 12fps
+      let lastDraw = 0;
+      const draw = (now: number) => {
         if (!active) return;
+        requestAnimationFrame(draw);
+        if (now - lastDraw < frameInterval) return;
+        lastDraw = now;
         const source = videoRef.current;
         if (recContext && source && source.videoWidth) {
           recContext.save();
@@ -584,11 +589,10 @@ export default function App() {
           drawCover(recContext, source, source.videoWidth, source.videoHeight, 0, 0, 1280, 720);
           recContext.restore();
         }
-        requestAnimationFrame(draw);
       };
       requestAnimationFrame(draw);
 
-      const recStream = recCanvas.captureStream(30);
+      const recStream = recCanvas.captureStream(12);
       const candidates = [
         "video/mp4;codecs=avc1",
         "video/mp4",
