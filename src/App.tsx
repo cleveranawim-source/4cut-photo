@@ -150,6 +150,112 @@ function loadImage(source: string) {
   });
 }
 
+// ── 픽셀 기반 필터 엔진 ─────────────────────────────────────────────
+// 캔버스 context.filter 은 일부 iPad Safari 등에서 지원되지 않아 결과물에 필터가
+// 안 먹는 문제가 있습니다. 그래서 CSS filter 와 같은 결과를 픽셀 연산으로 직접 구현해
+// 모든 기기에서 미리보기와 동일하게 결과물에도 필터가 들어가도록 합니다.
+
+type Rgb = [number, number, number];
+
+const colorMatrix = (m: number[]) => (r: number, g: number, b: number): Rgb => [
+  m[0] * r + m[1] * g + m[2] * b,
+  m[3] * r + m[4] * g + m[5] * b,
+  m[6] * r + m[7] * g + m[8] * b,
+];
+
+const saturateMatrix = (s: number) => [
+  0.213 + 0.787 * s, 0.715 - 0.715 * s, 0.072 - 0.072 * s,
+  0.213 - 0.213 * s, 0.715 + 0.285 * s, 0.072 - 0.072 * s,
+  0.213 - 0.213 * s, 0.715 - 0.715 * s, 0.072 + 0.928 * s,
+];
+
+const sepiaMatrix = (a: number) => {
+  const k = 1 - a;
+  return [
+    0.393 + 0.607 * k, 0.769 - 0.769 * k, 0.189 - 0.189 * k,
+    0.349 - 0.349 * k, 0.686 + 0.314 * k, 0.168 - 0.168 * k,
+    0.272 - 0.272 * k, 0.534 - 0.534 * k, 0.131 + 0.869 * k,
+  ];
+};
+
+const hueRotateMatrix = (deg: number) => {
+  const rad = (deg * Math.PI) / 180;
+  const c = Math.cos(rad);
+  const s = Math.sin(rad);
+  return [
+    0.213 + c * 0.787 - s * 0.213, 0.715 - c * 0.715 - s * 0.715, 0.072 - c * 0.072 + s * 0.928,
+    0.213 - c * 0.213 + s * 0.143, 0.715 + c * 0.285 + s * 0.14, 0.072 - c * 0.072 - s * 0.283,
+    0.213 - c * 0.213 - s * 0.787, 0.715 - c * 0.715 + s * 0.715, 0.072 + c * 0.928 + s * 0.072,
+  ];
+};
+
+// CSS filter 문자열(blur 제외)을 픽셀 변환 함수 배열로 만듭니다. 순서대로 적용됩니다.
+function buildFilterPipeline(css: string): Array<(r: number, g: number, b: number) => Rgb> {
+  const pipeline: Array<(r: number, g: number, b: number) => Rgb> = [];
+  const regex = /([\w-]+)\(([^)]+)\)/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(css))) {
+    const fn = match[1];
+    const raw = match[2].trim();
+    const value = raw.endsWith("%") ? parseFloat(raw) / 100 : parseFloat(raw);
+    if (Number.isNaN(value)) continue;
+    if (fn === "brightness") pipeline.push((r, g, b) => [r * value, g * value, b * value]);
+    else if (fn === "contrast")
+      pipeline.push((r, g, b) => [(r - 127.5) * value + 127.5, (g - 127.5) * value + 127.5, (b - 127.5) * value + 127.5]);
+    else if (fn === "saturate") pipeline.push(colorMatrix(saturateMatrix(value)));
+    else if (fn === "grayscale") pipeline.push(colorMatrix(saturateMatrix(1 - value)));
+    else if (fn === "sepia") pipeline.push(colorMatrix(sepiaMatrix(value)));
+    else if (fn === "hue-rotate") pipeline.push(colorMatrix(hueRotateMatrix(value)));
+    // blur() 등은 여기서 무시하고 글로우 단계에서 처리합니다.
+  }
+  return pipeline;
+}
+
+const clamp255 = (v: number) => (v < 0 ? 0 : v > 255 ? 255 : v);
+
+// 캔버스 픽셀에 필터를 직접 적용합니다.
+function filterCanvasPixels(context: CanvasRenderingContext2D, width: number, height: number, css: string) {
+  const pipeline = buildFilterPipeline(css);
+  if (!pipeline.length) return;
+  const image = context.getImageData(0, 0, width, height);
+  const data = image.data;
+  for (let i = 0; i < data.length; i += 4) {
+    let r = data[i];
+    let g = data[i + 1];
+    let b = data[i + 2];
+    for (const step of pipeline) {
+      const out = step(r, g, b);
+      r = out[0];
+      g = out[1];
+      b = out[2];
+    }
+    data[i] = clamp255(r);
+    data[i + 1] = clamp255(g);
+    data[i + 2] = clamp255(b);
+  }
+  context.putImageData(image, 0, 0);
+}
+
+// context.filter 없이 흐림 효과: 축소했다가 다시 확대하면 자연스럽게 뭉개집니다(모든 기기 지원).
+function makeBlurredCanvas(source: HTMLCanvasElement, width: number, height: number, downscale: number) {
+  const smallWidth = Math.max(1, Math.round(width / downscale));
+  const smallHeight = Math.max(1, Math.round(height / downscale));
+  const small = document.createElement("canvas");
+  small.width = smallWidth;
+  small.height = smallHeight;
+  const smallContext = small.getContext("2d")!;
+  smallContext.imageSmoothingEnabled = true;
+  smallContext.drawImage(source, 0, 0, smallWidth, smallHeight);
+  const output = document.createElement("canvas");
+  output.width = width;
+  output.height = height;
+  const outputContext = output.getContext("2d")!;
+  outputContext.imageSmoothingEnabled = true;
+  outputContext.imageSmoothingQuality = "high";
+  outputContext.drawImage(small, 0, 0, width, height);
+  return output;
+}
+
 // 미리보기에서 보이는 영역과 인쇄되는 영역을 똑같이 맞추기 위해,
 // 촬영 순간 화면을 인쇄 셀과 같은 가로세로비(PHOTO_RATIO)로 중앙 크롭합니다.
 const PHOTO_RATIO = 520 / 316;
@@ -177,49 +283,50 @@ function captureVideoFrame(video: HTMLVideoElement, filterCss: string = "none", 
   const context = canvas.getContext("2d", { alpha: false });
   if (!context) throw new Error("사진을 만들 수 없습니다.");
   // 전면 카메라 미리보기(좌우 반전)와 동일하게 보이도록 좌우 반전해 저장합니다.
+  context.save();
   context.translate(outputWidth, 0);
   context.scale(-1, 1);
-  // 선택한 필터를 촬영 순간 그대로 구워 넣습니다(미리보기 CSS filter 와 같은 값).
-  if (filterCss && filterCss !== "none") context.filter = filterCss;
   context.drawImage(video, sourceX, sourceY, cropWidth, cropHeight, 0, 0, outputWidth, outputHeight);
-  // 뽀샤시: ① 피부 소프트닝 ② 밝은 부분 글로우 ③ 뽀얀 하이키 베일
-  if (bloom > 0) {
-    const drawSource = () =>
-      context.drawImage(video, sourceX, sourceY, cropWidth, cropHeight, 0, 0, outputWidth, outputHeight);
-    applyGlow(context, drawSource, outputWidth, outputHeight, bloom);
-  }
+  context.restore();
+  // 선택한 필터를 픽셀 연산으로 굽습니다(미리보기 CSS filter 와 같은 결과, 모든 기기 지원).
+  if (filterCss && filterCss !== "none") filterCanvasPixels(context, outputWidth, outputHeight, filterCss);
+  // 뽀샤시 글로우
+  if (bloom > 0) applyGlow(canvas, context, outputWidth, outputHeight, bloom);
   return canvas.toDataURL("image/jpeg", 0.92);
 }
 
-// 흐릿한 사본을 겹쳐 부드럽게 만들고(소프트닝), 밝힌 사본을 더해(글로우), 흰 베일로 뽀얗게 마무리합니다.
+// context.filter 없이 글로우: 흐릿한 사본으로 소프트닝 + 밝힌 사본을 screen 으로 겹쳐 글로우 +
+// 옅은 흰 베일. 축소·확대로 흐림을 만들어 모든 기기에서 동작합니다.
 function applyGlow(
+  canvas: HTMLCanvasElement,
   context: CanvasRenderingContext2D,
-  drawSource: () => void,
   width: number,
   height: number,
   strength: number,
 ) {
-  const blurPx = Math.max(5, Math.round(width * 0.02));
-  // ① 소프트닝: 흐릿한 사본을 반투명으로 덮어 피부 결을 부드럽게
+  const blurred = makeBlurredCanvas(canvas, width, height, 16);
+  const glow = document.createElement("canvas");
+  glow.width = width;
+  glow.height = height;
+  const glowContext = glow.getContext("2d")!;
+  glowContext.drawImage(blurred, 0, 0);
+  filterCanvasPixels(glowContext, width, height, "brightness(1.35)");
+  // ① 소프트닝
   context.globalCompositeOperation = "source-over";
   context.globalAlpha = Math.min(0.55, strength * 0.45);
-  context.filter = `blur(${blurPx}px)`;
-  drawSource();
-  // ② 글로우: 밝힌 흐릿한 사본을 screen 으로 겹쳐 밝은 부분이 은은히 번지게(하얗게 날아가지 않음)
+  context.drawImage(blurred, 0, 0);
+  // ② 글로우(screen)
   context.globalCompositeOperation = "screen";
   context.globalAlpha = strength * 0.68;
-  context.filter = `blur(${blurPx}px) brightness(1.32)`;
-  drawSource();
-  // ③ 하이키 베일: 옅은 흰빛으로 전체를 뽀얗게
+  context.drawImage(glow, 0, 0);
+  // ③ 하이키 베일
   context.globalCompositeOperation = "source-over";
   context.globalAlpha = strength * 0.09;
-  context.filter = "none";
   context.fillStyle = "#fff";
   context.fillRect(0, 0, width, height);
   // 원상 복구
   context.globalAlpha = 1;
   context.globalCompositeOperation = "source-over";
-  context.filter = "none";
 }
 
 async function composeFourCut(images: string[], theme: Theme, eventName: string) {
@@ -324,7 +431,6 @@ function makeSampleFrames(filterCss: string = "none", bloom: number = 0) {
     canvas.width = 1200;
     canvas.height = 800;
     const context = canvas.getContext("2d")!;
-    if (filterCss && filterCss !== "none") context.filter = filterCss;
     context.fillStyle = background;
     context.fillRect(0, 0, canvas.width, canvas.height);
     context.fillStyle = "rgba(255,255,255,.5)";
@@ -350,10 +456,9 @@ function makeSampleFrames(filterCss: string = "none", bloom: number = 0) {
     context.font = "800 54px -apple-system, sans-serif";
     context.textAlign = "center";
     context.fillText(`SAMPLE ${index + 1}`, 600, 690);
-    // 뽀샤시 글로우(촬영 결과물과 동일한 방식)
-    if (bloom > 0) {
-      applyGlow(context, () => context.drawImage(canvas, 0, 0), canvas.width, canvas.height, bloom);
-    }
+    // 촬영 결과물과 동일하게: 픽셀 필터 → 뽀샤시 글로우
+    if (filterCss && filterCss !== "none") filterCanvasPixels(context, canvas.width, canvas.height, filterCss);
+    if (bloom > 0) applyGlow(canvas, context, canvas.width, canvas.height, bloom);
     return canvas.toDataURL("image/jpeg", 0.9);
   });
 }
