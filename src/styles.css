@@ -499,12 +499,25 @@ button:disabled {
 
 .camera-stage {
   position: relative;
+  display: grid;
+  place-items: center;
   min-height: 500px;
+  padding: clamp(16px, 3vw, 40px);
   overflow: hidden;
   background: #111827;
 }
 
-.camera-stage video {
+/* 인쇄 셀과 동일한 가로세로비(520:316)로 미리보기를 잘라, 보이는 그대로 인쇄되게 합니다. */
+.camera-frame {
+  position: relative;
+  width: min(100%, calc((100svh - 150px) * 520 / 316));
+  aspect-ratio: 520 / 316;
+  overflow: hidden;
+  border-radius: 24px;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.55), 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+
+.camera-frame video {
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -514,17 +527,7 @@ button:disabled {
 .camera-vignette {
   position: absolute;
   inset: 0;
-  box-shadow: inset 0 0 120px rgba(0, 0, 0, 0.32);
-  pointer-events: none;
-}
-
-.camera-stage::before {
-  position: absolute;
-  z-index: 2;
-  inset: 27px;
-  border: 2px solid rgba(255, 255, 255, 0.42);
-  border-radius: 27px;
-  content: "";
+  box-shadow: inset 0 0 90px rgba(0, 0, 0, 0.3);
   pointer-events: none;
 }
 

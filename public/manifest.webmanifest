@@ -1,6 +1,6 @@
 {
-  "name": "우리들의 네컷사진관",
-  "short_name": "네컷사진관",
+  "name": "우리들의 4컷 사진관",
+  "short_name": "4컷 사진관",
   "description": "iPad로 찍고, AirPrint로 인화하는 네컷사진관",
   "start_url": ".",
   "scope": ".",

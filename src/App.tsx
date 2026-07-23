@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 type Phase = "welcome" | "camera" | "preview";
-type ThemeKey = "sunny" | "berry" | "midnight";
+type ThemeKey = "sunny" | "berry" | "midnight" | "mint" | "lavender" | "ocean";
 
 type Theme = {
   name: string;
@@ -40,6 +40,33 @@ const THEMES: Record<ThemeKey, Theme> = {
     ink: "#f9f5ea",
     accent: "#67d9cb",
     accentSoft: "#2e716e",
+  },
+  mint: {
+    name: "민트 소다",
+    hint: "상큼하고 시원하게",
+    background: "#e4f7ef",
+    surface: "#f6fffb",
+    ink: "#1f4a3d",
+    accent: "#17b890",
+    accentSoft: "#bff0dd",
+  },
+  lavender: {
+    name: "라벤더",
+    hint: "은은하고 사랑스럽게",
+    background: "#efe9ff",
+    surface: "#faf8ff",
+    ink: "#3a2f57",
+    accent: "#7c5cff",
+    accentSoft: "#dccfff",
+  },
+  ocean: {
+    name: "오션 블루",
+    hint: "맑고 청량하게",
+    background: "#e5f0ff",
+    surface: "#f5faff",
+    ink: "#213453",
+    accent: "#2f7dff",
+    accentSoft: "#c4ddff",
   },
 };
 
@@ -90,22 +117,36 @@ function loadImage(source: string) {
   });
 }
 
+// 미리보기에서 보이는 영역과 인쇄되는 영역을 똑같이 맞추기 위해,
+// 촬영 순간 화면을 인쇄 셀과 같은 가로세로비(PHOTO_RATIO)로 중앙 크롭합니다.
+const PHOTO_RATIO = 520 / 316;
+
 function captureVideoFrame(video: HTMLVideoElement) {
   const sourceWidth = video.videoWidth;
   const sourceHeight = video.videoHeight;
   if (!sourceWidth || !sourceHeight) throw new Error("카메라 화면이 아직 준비되지 않았습니다.");
 
-  const maximumWidth = 1600;
-  const width = Math.min(sourceWidth, maximumWidth);
-  const height = Math.round((sourceHeight / sourceWidth) * width);
+  // 원본 프레임을 인쇄 비율로 중앙 크롭(cover)합니다.
+  let cropWidth = sourceWidth;
+  let cropHeight = Math.round(sourceWidth / PHOTO_RATIO);
+  if (cropHeight > sourceHeight) {
+    cropHeight = sourceHeight;
+    cropWidth = Math.round(sourceHeight * PHOTO_RATIO);
+  }
+  const sourceX = (sourceWidth - cropWidth) / 2;
+  const sourceY = (sourceHeight - cropHeight) / 2;
+
+  const outputWidth = Math.min(cropWidth, 1040);
+  const outputHeight = Math.round(outputWidth / PHOTO_RATIO);
   const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
+  canvas.width = outputWidth;
+  canvas.height = outputHeight;
   const context = canvas.getContext("2d", { alpha: false });
   if (!context) throw new Error("사진을 만들 수 없습니다.");
-  context.translate(width, 0);
+  // 전면 카메라 미리보기(좌우 반전)와 동일하게 보이도록 좌우 반전해 저장합니다.
+  context.translate(outputWidth, 0);
   context.scale(-1, 1);
-  context.drawImage(video, 0, 0, width, height);
+  context.drawImage(video, sourceX, sourceY, cropWidth, cropHeight, 0, 0, outputWidth, outputHeight);
   return canvas.toDataURL("image/jpeg", 0.92);
 }
 
@@ -135,7 +176,7 @@ async function composeFourCut(images: string[], theme: Theme, eventName: string)
     context.textAlign = "center";
     context.textBaseline = "middle";
     context.font = "800 52px -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', sans-serif";
-    context.fillText("우리들의 네컷", offsetX + 300, 78);
+    context.fillText("Happy with u", offsetX + 300, 78);
     context.fillStyle = theme.accent;
     context.font = "700 19px -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', sans-serif";
     context.fillText("FOUR MOMENTS, ONE MEMORY", offsetX + 300, 124);
@@ -255,7 +296,7 @@ function Icon({ name }: { name: "camera" | "qr" | "print" | "download" | "redo" 
 export default function App() {
   const [phase, setPhase] = useState<Phase>("welcome");
   const [themeKey, setThemeKey] = useState<ThemeKey>("sunny");
-  const [eventName, setEventName] = useState("우리 반의 빛나는 오늘");
+  const [eventName, setEventName] = useState("너와 나 그리고 우리");
   const [privacyChecked, setPrivacyChecked] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
   const [shooting, setShooting] = useState(false);
@@ -272,7 +313,7 @@ export default function App() {
 
   useEffect(() => {
     if (new URLSearchParams(window.location.search).get("sample") === "1") {
-      composeFourCut(makeSampleFrames(), THEMES.sunny, "우리 반의 빛나는 오늘")
+      composeFourCut(makeSampleFrames(), THEMES.sunny, "너와 나 그리고 우리")
         .then((result) => {
           setComposite(result);
           setPhase("preview");
@@ -332,9 +373,9 @@ export default function App() {
     try {
       for (let index = 0; index < 4; index += 1) {
         setStatus(`${index + 1}번째 사진을 준비하세요`);
-        for (let number = 3; number >= 1; number -= 1) {
+        for (let number = 5; number >= 1; number -= 1) {
           setCountdown(number);
-          await sleep(850);
+          await sleep(1000);
         }
         setCountdown(null);
         setFlash(true);
@@ -404,7 +445,7 @@ export default function App() {
       <header className="topbar no-print">
         <button className="brand" onClick={reset} aria-label="처음 화면으로">
           <span className="brand-mark"><Icon name="sparkle" /></span>
-          <span>우리들의 <strong>네컷사진관</strong></span>
+          <span>우리들의 <strong>4컷 사진관</strong></span>
         </button>
         <div className="privacy-badge"><span className="status-dot" /> 사진은 iPad에만 저장돼요</div>
       </header>
@@ -471,24 +512,26 @@ export default function App() {
       {phase === "camera" && (
         <main className="camera-layout no-print">
           <section className="camera-stage">
-            <video
-              ref={videoRef}
-              autoPlay
-              muted
-              playsInline
-              onCanPlay={() => setCameraReady(true)}
-              aria-label="카메라 미리보기"
-            />
-            <div className="camera-vignette" />
-            <div className={`flash ${flash ? "active" : ""}`} />
-            {countdown !== null && <div className="countdown" key={countdown}>{countdown}</div>}
-            <div className="camera-caption">화면을 보고 자연스럽게 웃어주세요!</div>
+            <div className="camera-frame">
+              <video
+                ref={videoRef}
+                autoPlay
+                muted
+                playsInline
+                onCanPlay={() => setCameraReady(true)}
+                aria-label="카메라 미리보기"
+              />
+              <div className="camera-vignette" />
+              <div className={`flash ${flash ? "active" : ""}`} />
+              {countdown !== null && <div className="countdown" key={countdown}>{countdown}</div>}
+            </div>
+            <div className="camera-caption">이 사각형 안이 그대로 인쇄돼요 · 자연스럽게 웃어주세요!</div>
           </section>
           <aside className="shoot-panel">
             <div>
               <div className="step-label">자동 촬영</div>
               <h2>{shooting ? status : "네 번의 순간을 담아요"}</h2>
-              <p>한 장마다 3초를 세고 자동으로 찍어요.<br />촬영 사이에 재빨리 포즈를 바꿔보세요.</p>
+              <p>한 장마다 5초를 세고 자동으로 찍어요.<br />촬영 사이에 재빨리 포즈를 바꿔보세요.</p>
             </div>
             <div className="shot-progress" aria-label={`${shotCount}장 촬영 완료`}>
               {[0, 1, 2, 3].map((index) => (
