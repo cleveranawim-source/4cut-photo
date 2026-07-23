@@ -531,6 +531,8 @@ export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const glowVideoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  // 촬영 시퀀스의 세대 번호. reset 등으로 증가하면 진행 중이던 시퀀스가 스스로 중단됩니다.
+  const runGenRef = useRef(0);
 
   const theme = THEMES[themeKey];
   const activeFilter = FILTERS.find((item) => item.key === filterKey) ?? FILTERS[0];
@@ -702,8 +704,10 @@ export default function App() {
         await navigator.share({ files: [file], title: "우리들의 네컷 영상" });
         return;
       }
-    } catch {
-      return; // 사용자가 공유를 취소한 경우
+    } catch (caught) {
+      // 사용자가 공유 창을 닫은 경우(AbortError)만 조용히 끝내고,
+      // 그 외 실패는 아래 다운로드 폴백으로 이어갑니다.
+      if (caught instanceof DOMException && caught.name === "AbortError") return;
     }
     const link = document.createElement("a");
     link.href = clip.url;
@@ -713,22 +717,30 @@ export default function App() {
 
   const runSequence = async () => {
     if (!videoRef.current || !cameraReady || shooting) return;
+    // 이 시퀀스의 세대 번호를 기억해 두고, 도중에 reset 등으로 세대가 바뀌거나
+    // 카메라 화면이 언마운트되면(videoRef 소실) 조용히 중단합니다.
+    const gen = ++runGenRef.current;
+    const aborted = () => runGenRef.current !== gen || !videoRef.current;
     setShooting(true);
     setError(null);
     setShots([]);
+    setShotCount(0);
     setClip(null);
     const frames: string[] = [];
     const timelapse = startTimelapseCapture();
     try {
       for (let index = 0; index < 4; index += 1) {
+        if (aborted()) return;
         setStatus(`${index + 1}번째 사진을 준비하세요`);
         for (let number = 5; number >= 1; number -= 1) {
           setCountdown(number);
           await sleep(1000);
+          if (aborted()) return;
         }
         setCountdown(null);
         setFlash(true);
         await sleep(90);
+        if (aborted()) return;
         const frame = await captureVideoFrame(videoRef.current, activeFilter.css, activeFilter.bloom ?? 0);
         frames.push(frame);
         setShots((previous) => [...previous, frame]);
@@ -739,19 +751,25 @@ export default function App() {
       }
       // 마지막 컷까지 끝 → 모은 스냅샷으로 타임랩스 영상 생성
       const snapshots = timelapse.stop();
+      if (aborted()) return;
       setStatus("타임랩스 영상 만드는 중…");
       const captured = await buildTimelapse(snapshots);
+      if (aborted()) {
+        if (captured) URL.revokeObjectURL(captured.url);
+        return;
+      }
       if (captured) setClip(captured);
       setStatus("네컷 사진을 꾸미고 있어요");
       const result = await composeFourCut(frames, theme, eventName);
+      if (aborted()) return;
       setComposite(result);
-      // 스트림은 끄지 않고 유지 — 다음 촬영 때 권한 팝업이 다시 뜨지 않습니다.
+      // 스트림은 끄지 않고 유지 — 완성 화면에서 '다시 찍기' 때 권한 팝업이 다시 뜨지 않습니다.
       setCameraReady(false);
       setPhase("preview");
     } catch (caught) {
-      timelapse.stop();
-      setError(caught instanceof Error ? caught.message : "촬영 중 문제가 생겼습니다.");
+      if (!aborted()) setError(caught instanceof Error ? caught.message : "촬영 중 문제가 생겼습니다.");
     } finally {
+      timelapse.stop(); // 중단 경로에서도 스냅샷 rAF 루프를 확실히 종료 (중복 호출 무해)
       setCountdown(null);
       setFlash(false);
       setShooting(false);
@@ -778,22 +796,43 @@ export default function App() {
   };
 
   const shareImage = async () => {
-    if (!composite || !navigator.share) {
-      downloadImage();
-      return;
-    }
+    if (!composite) return;
     try {
       const blob = await (await fetch(composite)).blob();
       const file = new File([blob], "우리들의-네컷.jpg", { type: "image/jpeg" });
-      await navigator.share({ title: "우리들의 네컷", files: [file] });
-    } catch {
-      // 사용자가 공유 창을 닫은 경우 아무 동작도 하지 않습니다.
+      // share 존재만으로는 부족 — 파일 공유(iPadOS 15+)를 지원하는지 canShare 로 확인해야
+      // 구형 기기에서 버튼이 무반응이 되지 않습니다.
+      if (navigator.share && navigator.canShare?.({ files: [file] })) {
+        await navigator.share({ title: "우리들의 네컷", files: [file] });
+        return;
+      }
+    } catch (caught) {
+      // 사용자가 공유 창을 닫은 경우(AbortError)만 조용히 끝냅니다.
+      if (caught instanceof DOMException && caught.name === "AbortError") return;
     }
+    // 파일 공유 미지원 기기·공유 실패 시 다운로드로 폴백합니다.
+    downloadImage();
+  };
+
+  const printImage = () => {
+    // 홈 화면에 추가한 standalone 웹앱에서는 window.print()가 동작하지 않는
+    // iPadOS 버전이 있어, 공유 시트로 폴백합니다(시트의 '프린트' 항목으로 인쇄).
+    const standalone =
+      window.matchMedia?.("(display-mode: standalone)").matches ||
+      (navigator as { standalone?: boolean }).standalone === true;
+    if (standalone) {
+      void shareImage();
+      return;
+    }
+    window.print();
   };
 
   const reset = () => {
-    // 카메라 스트림은 유지해 다음 촬영 때 권한 팝업이 다시 뜨지 않게 합니다.
-    setCameraReady(false);
+    // 진행 중일 수 있는 촬영 시퀀스를 중단시킵니다.
+    runGenRef.current += 1;
+    // 환영 화면에서는 카메라 표시등이 꺼지도록 스트림을 종료합니다.
+    // (같은 페이지 세션 안에서는 다시 촬영해도 보통 권한 팝업이 다시 뜨지 않습니다.)
+    stopCamera();
     setPhase("welcome");
     setComposite(null);
     setClip(null);
@@ -803,7 +842,7 @@ export default function App() {
   return (
     <div className={`app theme-${themeKey}`} style={{ "--theme-accent": theme.accent } as React.CSSProperties}>
       <header className="topbar no-print">
-        <button className="brand" onClick={reset} aria-label="처음 화면으로">
+        <button className="brand" onClick={reset} disabled={shooting} aria-label="처음 화면으로">
           <span className="brand-mark"><Icon name="sparkle" /></span>
           <span>우리들의 <strong>4컷 사진관</strong></span>
         </button>
@@ -955,7 +994,7 @@ export default function App() {
             </div>
             {error && <div className="error-message" role="alert">{error}</div>}
             <div className="result-actions">
-              <button className="action-button print-action" onClick={() => window.print()}>
+              <button className="action-button print-action" onClick={printImage}>
                 <Icon name="print" /><span><strong>사진 인쇄하기</strong><small>AirPrint 프린터 선택</small></span>
               </button>
               <button className="action-button" onClick={shareImage}>

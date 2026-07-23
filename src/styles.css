@@ -48,7 +48,12 @@ button:disabled {
   --paper: rgba(255, 255, 255, 0.82);
   position: relative;
   min-height: 100svh;
+  /* hidden 은 프로그램적 스크롤(입력창 포커스 시 Safari 커서 노출 스크롤 등)을 허용해
+     화면 밖 장식 블롭만큼 UI 전체가 옆으로 밀린 채 고정될 수 있음 → clip 으로 완전 차단 */
   overflow: hidden;
+  overflow: clip;
+  /* 한국어 단어가 중간에서 꺾이지 않게 (예: "준비하세\n요" 방지) */
+  word-break: keep-all;
   background:
     radial-gradient(circle at 4% 22%, rgba(255, 190, 119, 0.25) 0 9%, transparent 9.3%),
     radial-gradient(circle at 92% 82%, rgba(255, 112, 91, 0.18) 0 15%, transparent 15.3%),
@@ -103,6 +108,11 @@ button:disabled {
   font-size: 20px;
   font-weight: 700;
   letter-spacing: -0.04em;
+}
+
+/* 촬영 중에는 홈으로 이동을 막습니다(시퀀스 꼬임 방지) */
+.brand:disabled {
+  opacity: 0.55;
 }
 
 .brand strong {
@@ -1024,13 +1034,62 @@ button:disabled {
   display: none;
 }
 
-@media (max-width: 900px) and (orientation: portrait) {
-  .app {
-    overflow: auto;
-  }
-
+/* 세로 모드(폭 무관): 우측 패널을 아래로 내려 한 컬럼으로 쌓아 화면 폭을 가득 씁니다.
+   iPad 세로(폭 744~1032px)는 기존 900px 조건에 걸리지 않아 가로용 2단 레이아웃이
+   그대로 나오던 문제를 고칩니다. 세로 스크롤은 .app 대신 문서(body)가 담당합니다. */
+@media (orientation: portrait) {
   .topbar {
     height: 70px;
+  }
+
+  .welcome {
+    grid-template-columns: 1fr;
+    width: min(760px, 100%);
+    min-height: auto;
+    padding: 43px 24px 40px;
+  }
+
+  .camera-layout,
+  .result-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .camera-stage {
+    min-height: min(58svh, 720px);
+    /* 하단 필터 칩 바가 프레임을 가리지 않도록 공간 확보 */
+    padding-bottom: 96px;
+  }
+
+  .shoot-panel,
+  .result-panel {
+    align-items: center;
+    text-align: center;
+    padding: 30px 24px max(38px, env(safe-area-inset-bottom));
+  }
+
+  .shoot-panel > *,
+  .result-panel > * {
+    width: 100%;
+    max-width: 520px;
+  }
+
+  .result-panel .success-mark {
+    margin-inline: auto;
+  }
+
+  .result-preview {
+    min-height: auto;
+    padding: 28px 24px 20px;
+  }
+
+  .print-mat img {
+    height: min(52svh, 660px);
+  }
+}
+
+/* 좁은 세로 화면(폰) 전용 미세 조정 */
+@media (max-width: 900px) and (orientation: portrait) {
+  .topbar {
     padding-inline: 18px;
   }
 
@@ -1039,8 +1098,6 @@ button:disabled {
   }
 
   .welcome {
-    grid-template-columns: 1fr;
-    min-height: auto;
     padding: 43px 20px 35px;
   }
 
@@ -1052,22 +1109,12 @@ button:disabled {
     padding: 27px 20px;
   }
 
-  .camera-layout,
-  .result-layout {
-    grid-template-columns: 1fr;
-  }
-
   .camera-stage {
     min-height: 58svh;
-  }
-
-  .shoot-panel,
-  .result-panel {
-    padding: 30px 24px 38px;
+    padding-bottom: clamp(16px, 3vw, 40px);
   }
 
   .result-preview {
-    min-height: 56svh;
     padding: 25px;
   }
 

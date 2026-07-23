@@ -1,4 +1,4 @@
-const CACHE_NAME = "fourcut-shell-v3";
+const CACHE_NAME = "fourcut-shell-v4";
 // 상대 경로는 서비스워커 위치(예: /4cut-photo/sw.js)를 기준으로 해석되어
 // GitHub Pages 하위 경로에서도 올바르게 캐시됩니다.
 const SHELL = ["./", "./manifest.webmanifest", "./icon.svg"];
@@ -36,8 +36,12 @@ self.addEventListener("fetch", (event) => {
       (cached) =>
         cached ||
         fetch(request).then((response) => {
-          const copy = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+          // 실패 응답(404 등)을 캐시하면 배포가 정상화된 뒤에도 영원히 깨진 응답이
+          // 서빙되므로, 정상(ok) 응답만 캐시합니다.
+          if (response.ok) {
+            const copy = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+          }
           return response;
         }),
     ),

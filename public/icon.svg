@@ -7,5 +7,5 @@
     <circle cx="190" cy="292" r="46"/>
     <circle cx="322" cy="292" r="46"/>
   </g>
-  <path d="M167 397c28-35 150-35 178 0" fill="none" stroke="#ff745b" stroke-width="25" stroke-linecap="round"/>
+  <path d="M167 370c28 35 150 35 178 0" fill="none" stroke="#ff745b" stroke-width="25" stroke-linecap="round"/>
 </svg>
