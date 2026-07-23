@@ -1,7 +1,7 @@
-const CACHE_NAME = "fourcut-shell-v4";
+const CACHE_NAME = "fourcut-shell-v5";
 // 상대 경로는 서비스워커 위치(예: /4cut-photo/sw.js)를 기준으로 해석되어
 // GitHub Pages 하위 경로에서도 올바르게 캐시됩니다.
-const SHELL = ["./", "./manifest.webmanifest", "./icon.svg"];
+const SHELL = ["./", "./manifest.webmanifest", "./icon-192.png", "./apple-touch-icon.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL)));

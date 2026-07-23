@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
-type Phase = "welcome" | "camera" | "preview";
+type Phase = "welcome" | "camera" | "select" | "preview";
+type ShotMode = "six" | "four";
 type ThemeKey = "sunny" | "berry" | "midnight" | "mint" | "lavender" | "ocean";
 
 type Theme = {
@@ -105,6 +106,56 @@ const FILTERS: FilterDef[] = [
 
 const sleep = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
+// ── 사운드 (Web Audio 합성 — 오디오 파일 없이 동작) ─────────────────
+// AudioContext 는 사용자 제스처(촬영 시작 버튼) 안에서 resume 해야 iPad Safari 에서 소리가 납니다.
+let audioContext: AudioContext | null = null;
+
+function ensureAudio(): AudioContext | null {
+  try {
+    if (!audioContext) audioContext = new AudioContext();
+    // iOS WebKit 은 전화·Siri 인터럽션 후 비표준 "interrupted" 상태가 될 수 있어
+    // "suspended" 만이 아니라 running 이 아닌 모든 상태에서 resume 합니다.
+    if (audioContext.state !== "running") audioContext.resume().catch(() => undefined);
+    return audioContext;
+  } catch {
+    return null;
+  }
+}
+
+// 카운트다운 틱 — 마지막 1초는 높은 음으로 긴장감을 줍니다.
+function playBeep(frequency: number, durationMs: number, volume = 0.12) {
+  const context = ensureAudio();
+  if (!context) return;
+  const oscillator = context.createOscillator();
+  const gain = context.createGain();
+  oscillator.type = "sine";
+  oscillator.frequency.value = frequency;
+  gain.gain.setValueAtTime(volume, context.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + durationMs / 1000);
+  oscillator.connect(gain).connect(context.destination);
+  oscillator.start();
+  oscillator.stop(context.currentTime + durationMs / 1000);
+}
+
+// 셔터음 — 짧은 화이트노이즈 + 로우패스로 "찰칵" 느낌을 만듭니다.
+function playShutter() {
+  const context = ensureAudio();
+  if (!context) return;
+  const length = Math.floor(context.sampleRate * 0.09);
+  const buffer = context.createBuffer(1, length, context.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < length; i += 1) data[i] = (Math.random() * 2 - 1) * (1 - i / length);
+  const source = context.createBufferSource();
+  source.buffer = buffer;
+  const filter = context.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.frequency.value = 2600;
+  const gain = context.createGain();
+  gain.gain.value = 0.3;
+  source.connect(filter).connect(gain).connect(context.destination);
+  source.start();
+}
+
 function drawCover(
   context: CanvasRenderingContext2D,
   image: CanvasImageSource,
@@ -150,18 +201,43 @@ function loadImage(source: string) {
   });
 }
 
-// ── 픽셀 기반 필터 엔진 ─────────────────────────────────────────────
-// 캔버스 context.filter 은 일부 iPad Safari 등에서 지원되지 않아 결과물에 필터가
-// 안 먹는 문제가 있습니다. 그래서 CSS filter 와 같은 결과를 픽셀 연산으로 직접 구현해
-// 모든 기기에서 미리보기와 동일하게 결과물에도 필터가 들어가도록 합니다.
+// ── 필터 엔진 ──────────────────────────────────────────────────────
+// 캔버스 context.filter 는 현행 iPadOS 전 버전에서 실험 플래그 뒤에 있어 비활성입니다
+// (2026-07 기준, WebKit 구현은 있으나 기본 꺼짐) — 즉 iPad 는 항상 아래 픽셀 폴백을 탑니다.
+// 감지는 실제 1×1 픽셀에 grayscale 을 적용해 결과를 읽어 확인하므로, 파싱만 되고
+// 렌더링이 안 되는 구현이나 향후 플래그 활성화에도 안전합니다. (Chrome 등은 네이티브 GPU 경로)
 
-type Rgb = [number, number, number];
+const supportsCanvasFilter = (() => {
+  try {
+    const probe = document.createElement("canvas");
+    probe.width = probe.height = 1;
+    const context = probe.getContext("2d", { willReadFrequently: true });
+    if (!context || typeof context.filter !== "string") return false;
+    const red = document.createElement("canvas");
+    red.width = red.height = 1;
+    const redContext = red.getContext("2d")!;
+    redContext.fillStyle = "#f00";
+    redContext.fillRect(0, 0, 1, 1);
+    context.filter = "grayscale(1)";
+    context.drawImage(red, 0, 0);
+    const [r, g, b] = context.getImageData(0, 0, 1, 1).data;
+    return r === g && g === b; // 필터가 실제로 렌더링에 적용됐는지 확인
+  } catch {
+    return false;
+  }
+})();
 
-const colorMatrix = (m: number[]) => (r: number, g: number, b: number): Rgb => [
-  m[0] * r + m[1] * g + m[2] * b,
-  m[3] * r + m[4] * g + m[5] * b,
-  m[6] * r + m[7] * g + m[8] * b,
-];
+// 네이티브 filter 로 사본을 만듭니다(지원 기기 전용, GPU 가속).
+function filteredCopy(source: HTMLCanvasElement, css: string): HTMLCanvasElement {
+  const out = document.createElement("canvas");
+  out.width = source.width;
+  out.height = source.height;
+  const context = out.getContext("2d", { alpha: false })!;
+  context.filter = css;
+  context.drawImage(source, 0, 0);
+  context.filter = "none";
+  return out;
+}
 
 const saturateMatrix = (s: number) => [
   0.213 + 0.787 * s, 0.715 - 0.715 * s, 0.072 - 0.072 * s,
@@ -189,9 +265,33 @@ const hueRotateMatrix = (deg: number) => {
   ];
 };
 
-// CSS filter 문자열(blur 제외)을 픽셀 변환 함수 배열로 만듭니다. 순서대로 적용됩니다.
-function buildFilterPipeline(css: string): Array<(r: number, g: number, b: number) => Rgb> {
-  const pipeline: Array<(r: number, g: number, b: number) => Rgb> = [];
+// CSS filter 문자열(blur 제외)을 3×3 행렬 + 오프셋 하나로 사전 합성합니다.
+// 모든 단계(brightness/contrast/saturate/grayscale/sepia/hue-rotate)가 선형변환이라
+// out = M·in + b 로 합쳐지며, 픽셀 루프에서 함수 호출·배열 할당이 사라집니다.
+function composeFilterMatrix(css: string): { m: number[]; o: number[] } | null {
+  // 현재 누적 변환: out = M·in + b
+  let m = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  let o = [0, 0, 0];
+  let steps = 0;
+  const apply = (sm: number[], so: number[]) => {
+    // 새 누적: out = Ms·(M·in + b) + bs = (Ms·M)·in + (Ms·b + bs)
+    const nm = new Array<number>(9);
+    for (let row = 0; row < 3; row += 1) {
+      for (let col = 0; col < 3; col += 1) {
+        nm[row * 3 + col] =
+          sm[row * 3] * m[col] + sm[row * 3 + 1] * m[3 + col] + sm[row * 3 + 2] * m[6 + col];
+      }
+    }
+    const no = [
+      sm[0] * o[0] + sm[1] * o[1] + sm[2] * o[2] + so[0],
+      sm[3] * o[0] + sm[4] * o[1] + sm[5] * o[2] + so[1],
+      sm[6] * o[0] + sm[7] * o[1] + sm[8] * o[2] + so[2],
+    ];
+    m = nm;
+    o = no;
+    steps += 1;
+  };
+  const scale = (v: number) => [v, 0, 0, 0, v, 0, 0, 0, v];
   const regex = /([\w-]+)\(([^)]+)\)/g;
   let match: RegExpExecArray | null;
   while ((match = regex.exec(css))) {
@@ -199,41 +299,43 @@ function buildFilterPipeline(css: string): Array<(r: number, g: number, b: numbe
     const raw = match[2].trim();
     const value = raw.endsWith("%") ? parseFloat(raw) / 100 : parseFloat(raw);
     if (Number.isNaN(value)) continue;
-    if (fn === "brightness") pipeline.push((r, g, b) => [r * value, g * value, b * value]);
-    else if (fn === "contrast")
-      pipeline.push((r, g, b) => [(r - 127.5) * value + 127.5, (g - 127.5) * value + 127.5, (b - 127.5) * value + 127.5]);
-    else if (fn === "saturate") pipeline.push(colorMatrix(saturateMatrix(value)));
-    else if (fn === "grayscale") pipeline.push(colorMatrix(saturateMatrix(1 - value)));
-    else if (fn === "sepia") pipeline.push(colorMatrix(sepiaMatrix(value)));
-    else if (fn === "hue-rotate") pipeline.push(colorMatrix(hueRotateMatrix(value)));
+    if (fn === "brightness") apply(scale(value), [0, 0, 0]);
+    else if (fn === "contrast") apply(scale(value), Array(3).fill(127.5 * (1 - value)));
+    else if (fn === "saturate") apply(saturateMatrix(value), [0, 0, 0]);
+    else if (fn === "grayscale") apply(saturateMatrix(1 - value), [0, 0, 0]);
+    else if (fn === "sepia") apply(sepiaMatrix(value), [0, 0, 0]);
+    else if (fn === "hue-rotate") apply(hueRotateMatrix(value), [0, 0, 0]);
     // blur() 등은 여기서 무시하고 글로우 단계에서 처리합니다.
   }
-  return pipeline;
+  return steps ? { m, o } : null;
 }
 
 const clamp255 = (v: number) => (v < 0 ? 0 : v > 255 ? 255 : v);
 
-// 캔버스 픽셀에 필터를 직접 적용합니다.
+// 캔버스 픽셀에 필터를 직접 적용합니다(ctx.filter 미지원 기기 폴백).
 function filterCanvasPixels(context: CanvasRenderingContext2D, width: number, height: number, css: string) {
-  const pipeline = buildFilterPipeline(css);
-  if (!pipeline.length) return;
+  const composed = composeFilterMatrix(css);
+  if (!composed) return;
+  const { m, o } = composed;
   const image = context.getImageData(0, 0, width, height);
   const data = image.data;
   for (let i = 0; i < data.length; i += 4) {
-    let r = data[i];
-    let g = data[i + 1];
-    let b = data[i + 2];
-    for (const step of pipeline) {
-      const out = step(r, g, b);
-      r = out[0];
-      g = out[1];
-      b = out[2];
-    }
-    data[i] = clamp255(r);
-    data[i + 1] = clamp255(g);
-    data[i + 2] = clamp255(b);
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    data[i] = clamp255(m[0] * r + m[1] * g + m[2] * b + o[0]);
+    data[i + 1] = clamp255(m[3] * r + m[4] * g + m[5] * b + o[1]);
+    data[i + 2] = clamp255(m[6] * r + m[7] * g + m[8] * b + o[2]);
   }
   context.putImageData(image, 0, 0);
+}
+
+// 필터를 캔버스에 굽습니다 — 지원 기기는 GPU 네이티브, 미지원 기기는 픽셀 폴백.
+function bakeFilter(source: HTMLCanvasElement, css: string): HTMLCanvasElement {
+  if (supportsCanvasFilter) return filteredCopy(source, css);
+  const context = source.getContext("2d", { alpha: false })!;
+  filterCanvasPixels(context, source.width, source.height, css);
+  return source;
 }
 
 // context.filter 없이 흐림 효과: 축소했다가 다시 확대하면 자연스럽게 뭉개집니다(모든 기기 지원).
@@ -280,7 +382,8 @@ function grabFrame(video: HTMLVideoElement): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
   canvas.width = outputWidth;
   canvas.height = outputHeight;
-  const context = canvas.getContext("2d", { alpha: false });
+  // 픽셀 폴백 경로에서 getImageData 를 반복하므로 CPU 백킹 힌트를 줍니다(GPU 리드백 스톨 방지).
+  const context = canvas.getContext("2d", { alpha: false, willReadFrequently: !supportsCanvasFilter });
   if (!context) throw new Error("사진을 만들 수 없습니다.");
   // 전면 카메라 미리보기(좌우 반전)와 동일하게 보이도록 좌우 반전해 저장합니다.
   context.translate(outputWidth, 0);
@@ -291,32 +394,58 @@ function grabFrame(video: HTMLVideoElement): HTMLCanvasElement {
 }
 
 // 선명도 점수(인접 픽셀 밝기차의 합) — 클수록 덜 흔들린(또렷한) 프레임입니다.
+// 순위 판별에는 해상도가 필요 없어 1/4 축소 사본에서 채점합니다(데이터량 1/16).
 function sharpnessScore(canvas: HTMLCanvasElement): number {
-  const width = canvas.width;
-  const height = canvas.height;
-  const context = canvas.getContext("2d", { alpha: false });
+  const width = Math.max(1, Math.round(canvas.width / 4));
+  const height = Math.max(1, Math.round(canvas.height / 4));
+  const small = document.createElement("canvas");
+  small.width = width;
+  small.height = height;
+  const context = small.getContext("2d", { alpha: false, willReadFrequently: true });
   if (!context) return 0;
+  context.drawImage(canvas, 0, 0, width, height);
   const data = context.getImageData(0, 0, width, height).data;
-  const step = 2; // 2픽셀 간격 샘플링으로 속도 확보
   const luma = (i: number) => data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
   let sum = 0;
-  for (let y = step; y < height; y += step) {
-    for (let x = step; x < width; x += step) {
+  for (let y = 1; y < height; y += 1) {
+    for (let x = 1; x < width; x += 1) {
       const i = (y * width + x) * 4;
-      const left = (y * width + (x - step)) * 4;
-      const up = ((y - step) * width + x) * 4;
       const value = luma(i);
-      sum += Math.abs(value - luma(left)) + Math.abs(value - luma(up));
+      sum += Math.abs(value - luma(i - 4)) + Math.abs(value - luma(i - width * 4));
     }
   }
   return sum;
+}
+
+// 다음 실제 비디오 프레임까지 대기 — 고정 슬립 대신 새 프레임에 맞춰 후보를 잡습니다.
+// 카메라 인터럽션 등으로 프레임이 멈추면 콜백이 영영 안 올 수 있어 200ms 상한을 둡니다
+// (상한 없이는 촬영 시퀀스가 shooting=true 로 고착되어 새로고침 외 복구 불가).
+function nextVideoFrame(video: HTMLVideoElement) {
+  return new Promise<void>((resolve) => {
+    const request = (video as HTMLVideoElement & {
+      requestVideoFrameCallback?: (callback: () => void) => void;
+    }).requestVideoFrameCallback;
+    if (typeof request !== "function") {
+      window.setTimeout(resolve, 45);
+      return;
+    }
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      resolve();
+    };
+    const timer = window.setTimeout(finish, 200);
+    request.call(video, finish);
+  });
 }
 
 async function captureVideoFrame(video: HTMLVideoElement, filterCss: string = "none", bloom: number = 0) {
   // 짧은 순간 여러 프레임을 잡아 가장 선명한(덜 흔들린) 프레임을 고릅니다 — 모션 블러 완화.
   let best: HTMLCanvasElement | null = null;
   let bestScore = -1;
-  const attempts = 4;
+  const attempts = 3;
   for (let i = 0; i < attempts; i += 1) {
     const candidate = grabFrame(video);
     const score = sharpnessScore(candidate);
@@ -324,17 +453,17 @@ async function captureVideoFrame(video: HTMLVideoElement, filterCss: string = "n
       bestScore = score;
       best = candidate;
     }
-    if (i < attempts - 1) await sleep(45);
+    if (i < attempts - 1) await nextVideoFrame(video);
   }
 
-  const canvas = best as HTMLCanvasElement;
-  const width = canvas.width;
-  const height = canvas.height;
-  const context = canvas.getContext("2d", { alpha: false })!;
-  // 선택한 필터를 픽셀 연산으로 굽습니다(미리보기 CSS filter 와 같은 결과, 모든 기기 지원).
-  if (filterCss && filterCss !== "none") filterCanvasPixels(context, width, height, filterCss);
+  let canvas = best as HTMLCanvasElement;
+  // 선택한 필터를 굽습니다 — 미리보기 CSS filter 와 같은 결과.
+  if (filterCss && filterCss !== "none") canvas = bakeFilter(canvas, filterCss);
   // 뽀샤시 글로우
-  if (bloom > 0) applyGlow(canvas, context, width, height, bloom);
+  if (bloom > 0) {
+    const context = canvas.getContext("2d", { alpha: false })!;
+    applyGlow(canvas, context, canvas.width, canvas.height, bloom);
+  }
   return canvas.toDataURL("image/jpeg", 0.92);
 }
 
@@ -347,14 +476,22 @@ function applyGlow(
   height: number,
   strength: number,
 ) {
-  // 원본 디테일을 유지하기 위해 흐림은 약하게(축소 배율 작게) 만들고, 글로우는 선명한 원본 위에 얹습니다.
-  const blurred = makeBlurredCanvas(canvas, width, height, 9);
-  const glow = document.createElement("canvas");
-  glow.width = width;
-  glow.height = height;
-  const glowContext = glow.getContext("2d")!;
-  glowContext.drawImage(blurred, 0, 0);
-  filterCanvasPixels(glowContext, width, height, "brightness(1.45)");
+  // 원본 디테일을 유지하기 위해 흐림은 약하게 만들고, 글로우는 선명한 원본 위에 얹습니다.
+  // 네이티브 filter 지원 시 진짜 가우시안 블러(GPU), 미지원 시 축소·확대 근사 블러.
+  let blurred: HTMLCanvasElement;
+  let glow: HTMLCanvasElement;
+  if (supportsCanvasFilter) {
+    blurred = filteredCopy(canvas, "blur(6px)");
+    glow = filteredCopy(canvas, "blur(6px) brightness(1.45)");
+  } else {
+    blurred = makeBlurredCanvas(canvas, width, height, 9);
+    glow = document.createElement("canvas");
+    glow.width = width;
+    glow.height = height;
+    const glowContext = glow.getContext("2d", { willReadFrequently: true })!;
+    glowContext.drawImage(blurred, 0, 0);
+    filterCanvasPixels(glowContext, width, height, "brightness(1.45)");
+  }
   // ① 글로우: 밝힌 흐릿한 사본을 screen 으로 얹기 — 선명한 원본은 그대로 두고 밝은 부분만 은은히 번짐
   context.globalCompositeOperation = "screen";
   context.globalAlpha = strength * 0.55;
@@ -492,10 +629,14 @@ function makeSampleFrames(filterCss: string = "none", bloom: number = 0) {
     context.font = "800 54px -apple-system, sans-serif";
     context.textAlign = "center";
     context.fillText(`SAMPLE ${index + 1}`, 600, 690);
-    // 촬영 결과물과 동일하게: 픽셀 필터 → 뽀샤시 글로우
-    if (filterCss && filterCss !== "none") filterCanvasPixels(context, canvas.width, canvas.height, filterCss);
-    if (bloom > 0) applyGlow(canvas, context, canvas.width, canvas.height, bloom);
-    return canvas.toDataURL("image/jpeg", 0.9);
+    // 촬영 결과물과 동일하게: 필터 굽기 → 뽀샤시 글로우
+    let out = canvas;
+    if (filterCss && filterCss !== "none") out = bakeFilter(out, filterCss);
+    if (bloom > 0) {
+      const outContext = out.getContext("2d")!;
+      applyGlow(out, outContext, out.width, out.height, bloom);
+    }
+    return out.toDataURL("image/jpeg", 0.9);
   });
 }
 
@@ -516,6 +657,9 @@ export default function App() {
   const [phase, setPhase] = useState<Phase>("welcome");
   const [themeKey, setThemeKey] = useState<ThemeKey>("sunny");
   const [filterKey, setFilterKey] = useState<FilterKey>("none");
+  const [shotMode, setShotMode] = useState<ShotMode>("six");
+  const [picked, setPicked] = useState<number[]>([]);
+  const [composing, setComposing] = useState(false);
   const [eventName, setEventName] = useState("너와 나 그리고 우리");
   const [privacyChecked, setPrivacyChecked] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
@@ -535,6 +679,7 @@ export default function App() {
   const runGenRef = useRef(0);
 
   const theme = THEMES[themeKey];
+  const totalShots = shotMode === "six" ? 6 : 4;
   const activeFilter = FILTERS.find((item) => item.key === filterKey) ?? FILTERS[0];
   // 라이브 미리보기용 값: 기본 보정(메인 레이어)과 글로우 레이어(스크린 블렌드) 세기
   const previewFilter = activeFilter.previewCss ?? activeFilter.css;
@@ -725,20 +870,25 @@ export default function App() {
     setError(null);
     setShots([]);
     setShotCount(0);
+    setPicked([]);
     setClip(null);
+    ensureAudio(); // 사용자 제스처 안에서 오디오를 깨워둡니다 (iPad Safari 자동재생 정책)
+    const shotsToTake = totalShots;
     const frames: string[] = [];
     const timelapse = startTimelapseCapture();
     try {
-      for (let index = 0; index < 4; index += 1) {
+      for (let index = 0; index < shotsToTake; index += 1) {
         if (aborted()) return;
         setStatus(`${index + 1}번째 사진을 준비하세요`);
         for (let number = 5; number >= 1; number -= 1) {
           setCountdown(number);
+          playBeep(number === 1 ? 1320 : 880, 80);
           await sleep(1000);
           if (aborted()) return;
         }
         setCountdown(null);
         setFlash(true);
+        playShutter();
         await sleep(90);
         if (aborted()) return;
         const frame = await captureVideoFrame(videoRef.current, activeFilter.css, activeFilter.bloom ?? 0);
@@ -747,24 +897,31 @@ export default function App() {
         setShotCount(index + 1);
         await sleep(180);
         setFlash(false);
-        if (index < 3) await sleep(650);
+        if (index < shotsToTake - 1) await sleep(650);
       }
-      // 마지막 컷까지 끝 → 모은 스냅샷으로 타임랩스 영상 생성
       const snapshots = timelapse.stop();
       if (aborted()) return;
-      setStatus("타임랩스 영상 만드는 중…");
-      const captured = await buildTimelapse(snapshots);
-      if (aborted()) {
-        if (captured) URL.revokeObjectURL(captured.url);
+      // 타임랩스는 백그라운드에서 생성 — 완성/선택 화면 진입을 막지 않고,
+      // 끝나면 '타임랩스 영상 저장' 버튼이 나타납니다.
+      void buildTimelapse(snapshots).then((captured) => {
+        if (!captured) return;
+        if (runGenRef.current !== gen) {
+          URL.revokeObjectURL(captured.url);
+          return;
+        }
+        setClip(captured);
+      });
+      // 스트림은 끄지 않고 유지 — '다시 찍기' 때 권한 팝업이 다시 뜨지 않습니다.
+      setCameraReady(false);
+      if (shotsToTake === 6) {
+        // 6컷 모드: 베스트 4컷 선택 화면으로
+        setPhase("select");
         return;
       }
-      if (captured) setClip(captured);
       setStatus("네컷 사진을 꾸미고 있어요");
       const result = await composeFourCut(frames, theme, eventName);
       if (aborted()) return;
       setComposite(result);
-      // 스트림은 끄지 않고 유지 — 완성 화면에서 '다시 찍기' 때 권한 팝업이 다시 뜨지 않습니다.
-      setCameraReady(false);
       setPhase("preview");
     } catch (caught) {
       if (!aborted()) setError(caught instanceof Error ? caught.message : "촬영 중 문제가 생겼습니다.");
@@ -785,6 +942,35 @@ export default function App() {
 
   const retake = async () => {
     await startCamera();
+  };
+
+  // 6컷 중 베스트 4컷 선택 — 탭 순서가 스트립에 배치되는 순서가 됩니다.
+  const togglePick = (index: number) => {
+    setPicked((previous) => {
+      if (previous.includes(index)) return previous.filter((item) => item !== index);
+      if (previous.length >= 4) return previous;
+      return [...previous, index];
+    });
+  };
+
+  const finishSelect = async () => {
+    if (picked.length !== 4 || composing) return;
+    // 합성 중 reset(로고·유휴 타이머)이 실행되면 완료 시점에 preview 로 되돌아가지 않도록 세대 확인
+    const gen = runGenRef.current;
+    setComposing(true);
+    setError(null);
+    try {
+      const chosen = picked.map((index) => shots[index]);
+      const result = await composeFourCut(chosen, theme, eventName);
+      if (runGenRef.current !== gen) return;
+      setComposite(result);
+      setPhase("preview");
+    } catch (caught) {
+      if (runGenRef.current === gen)
+        setError(caught instanceof Error ? caught.message : "네컷을 만드는 중 문제가 생겼습니다.");
+    } finally {
+      setComposing(false);
+    }
   };
 
   const downloadImage = () => {
@@ -836,13 +1022,59 @@ export default function App() {
     setPhase("welcome");
     setComposite(null);
     setClip(null);
+    setPicked([]);
     setError(null);
   };
+
+  // 화면 꺼짐 방지 — 행사 키오스크에서 iPad 자동 잠금이 걸리지 않게 합니다(iPadOS 16.4+).
+  useEffect(() => {
+    let lock: WakeLockSentinel | null = null;
+    let disposed = false;
+    const request = async () => {
+      try {
+        lock = (await navigator.wakeLock?.request("screen")) ?? null;
+        if (disposed) lock?.release().catch(() => undefined);
+      } catch (caught) {
+        // 미지원 기기·저전력 모드(NotAllowedError) 등 — 앱 동작에는 지장 없지만
+        // 화면 꺼짐 방지가 비활성임을 콘솔로 남깁니다(운영: 저전력 모드 해제 권장).
+        console.warn("화면 꺼짐 방지(Wake Lock)를 켤 수 없습니다:", caught);
+      }
+    };
+    void request();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") void request();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      disposed = true;
+      document.removeEventListener("visibilitychange", onVisibility);
+      lock?.release().catch(() => undefined);
+    };
+  }, []);
+
+  // 완성/선택 화면 방치 시 자동 초기화 — 앞 팀의 사진이 다음 이용자에게 노출되지 않게 합니다.
+  const IDLE_RESET_SECONDS = 90;
+  useEffect(() => {
+    if (phase !== "preview" && phase !== "select") return;
+    let timer = 0;
+    const arm = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => reset(), IDLE_RESET_SECONDS * 1000);
+    };
+    arm();
+    const events = ["pointerdown", "keydown", "touchstart"] as const;
+    events.forEach((name) => window.addEventListener(name, arm));
+    return () => {
+      window.clearTimeout(timer);
+      events.forEach((name) => window.removeEventListener(name, arm));
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
 
   return (
     <div className={`app theme-${themeKey}`} style={{ "--theme-accent": theme.accent } as React.CSSProperties}>
       <header className="topbar no-print">
-        <button className="brand" onClick={reset} disabled={shooting} aria-label="처음 화면으로">
+        <button className="brand" onClick={reset} disabled={shooting || composing} aria-label="처음 화면으로">
           <span className="brand-mark"><Icon name="sparkle" /></span>
           <span>우리들의 <strong>4컷 사진관</strong></span>
         </button>
@@ -894,6 +1126,30 @@ export default function App() {
               </div>
             </fieldset>
 
+            <fieldset className="mode-picker">
+              <legend>촬영 방식</legend>
+              <div className="mode-options">
+                <button
+                  type="button"
+                  className={`mode-option ${shotMode === "six" ? "selected" : ""}`}
+                  onClick={() => setShotMode("six")}
+                  aria-pressed={shotMode === "six"}
+                >
+                  <strong>6컷 찍고 고르기</strong>
+                  <small>여섯 장 중 베스트 4장 선택</small>
+                </button>
+                <button
+                  type="button"
+                  className={`mode-option ${shotMode === "four" ? "selected" : ""}`}
+                  onClick={() => setShotMode("four")}
+                  aria-pressed={shotMode === "four"}
+                >
+                  <strong>4컷 바로 완성</strong>
+                  <small>찍은 그대로 빠르게</small>
+                </button>
+              </div>
+            </fieldset>
+
             <label className="privacy-check">
               <input type="checkbox" checked={privacyChecked} onChange={(event) => setPrivacyChecked(event.target.checked)} />
               <span><strong>촬영 안내를 확인했어요.</strong><small>사진은 서버로 전송되지 않고 이 iPad에서만 만들어져요.</small></span>
@@ -933,7 +1189,9 @@ export default function App() {
               />
               <div className="camera-vignette" />
               <div className={`flash ${flash ? "active" : ""}`} />
-              {countdown !== null && <div className="countdown" key={countdown}>{countdown}</div>}
+              {countdown !== null && (
+                <div className={`countdown ${countdown === 1 ? "last" : ""}`} key={countdown}>{countdown}</div>
+              )}
             </div>
             <div className="camera-caption">이 사각형 안이 그대로 인쇄돼요 · 자연스럽게 웃어주세요!</div>
             <div className="camera-filters" role="group" aria-label="사진 필터 선택">
@@ -954,11 +1212,18 @@ export default function App() {
           <aside className="shoot-panel">
             <div>
               <div className="step-label">자동 촬영</div>
-              <h2>{shooting ? status : "네 번의 순간을 담아요"}</h2>
-              <p>한 장마다 5초를 세고 자동으로 찍어요.<br />촬영 사이에 재빨리 포즈를 바꿔보세요.</p>
+              <h2>{shooting ? status : shotMode === "six" ? "여섯 번 찍고 넷을 골라요" : "네 번의 순간을 담아요"}</h2>
+              <p>
+                한 장마다 5초를 세고 자동으로 찍어요.<br />
+                {shotMode === "six" ? "촬영이 끝나면 베스트 4컷을 골라요." : "촬영 사이에 재빨리 포즈를 바꿔보세요."}
+              </p>
             </div>
-            <div className="shot-progress" aria-label={`${shotCount}장 촬영 완료`}>
-              {[0, 1, 2, 3].map((index) => (
+            <div
+              className="shot-progress"
+              style={{ gridTemplateColumns: `repeat(${totalShots}, 1fr)` }}
+              aria-label={`${shotCount}장 촬영 완료`}
+            >
+              {Array.from({ length: totalShots }, (_, index) => (
                 <span
                   className={shots[index] ? "done shot-thumb" : index === shotCount && shooting ? "current" : ""}
                   key={index}
@@ -973,6 +1238,45 @@ export default function App() {
               {cameraReady ? (shooting ? "촬영 중…" : "촬영 시작") : "카메라 준비 중…"}
             </button>
             <button className="text-button" disabled={shooting} onClick={reset}>처음으로 돌아가기</button>
+          </aside>
+        </main>
+      )}
+
+      {phase === "select" && shots.length === 6 && (
+        <main className="select-layout no-print">
+          <section className="select-stage">
+            <div className="select-grid" role="group" aria-label="베스트 컷 고르기">
+              {shots.map((shot, index) => {
+                const order = picked.indexOf(index);
+                return (
+                  <button
+                    type="button"
+                    className={`select-cell ${order >= 0 ? "picked" : ""}`}
+                    onClick={() => togglePick(index)}
+                    aria-pressed={order >= 0}
+                    key={index}
+                  >
+                    <img src={shot} alt={`${index + 1}번째 컷`} />
+                    {order >= 0 && <span className="pick-badge">{order + 1}</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+          <aside className="select-panel">
+            <div>
+              <div className="step-label">베스트 컷 고르기</div>
+              <h2>마음에 드는 4장을<br />순서대로 골라주세요</h2>
+              <p>고른 순서대로 위에서 아래로 배치돼요.<br />다시 탭하면 선택이 취소돼요.</p>
+            </div>
+            <div className="pick-count" aria-live="polite">{picked.length} / 4 선택</div>
+            {error && <div className="error-message" role="alert">{error}</div>}
+            <button className="primary-button" disabled={picked.length !== 4 || composing} onClick={finishSelect}>
+              {composing ? "네컷 만드는 중…" : "이 4장으로 완성하기"} <span>→</span>
+            </button>
+            <button className="retake-button" disabled={composing} onClick={retake}><Icon name="redo" /> 전부 다시 찍기</button>
+            <button className="text-button" disabled={composing} onClick={reset}>처음으로 돌아가기</button>
+            <div className="idle-hint">{IDLE_RESET_SECONDS}초 동안 조작이 없으면 처음 화면으로 돌아가요</div>
           </aside>
         </main>
       )}
@@ -1008,6 +1312,7 @@ export default function App() {
             </div>
             <button className="retake-button" onClick={retake}><Icon name="redo" /> 다시 찍기</button>
             <button className="text-button" onClick={reset}>새 손님 맞이하기</button>
+            <div className="idle-hint">{IDLE_RESET_SECONDS}초 동안 조작이 없으면 처음 화면으로 돌아가요</div>
           </aside>
         </main>
       )}
